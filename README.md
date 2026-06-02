@@ -70,6 +70,76 @@ etc
 
 Link de descarga: https://github.com/ProgLuis/FlatCAM9NeoS2/releases/tag/V9
 
+Archivos principales modernizados y adaptados para compatibilidad con Shapely 2.x
+
+Bin
+- app_Main.py
+- appPool.py
+- camlib.py
+- Common.py
+- FlatCAM.py
+- FlatCAMExcellon.py
+- FlatCAMGerber.py
+- FlatCAMGeometry.py
+- FlatCAMObj.py
+- PlotCanvas.py
+- PlotCanvasLegacy.py
+
+appCommon
+- Common.py
+
+appEditors
+- AppExcEditor.py
+- AppGeoEditor.py
+- AppGerberEditor.py
+
+appGUI
+- GUIElements.py
+- PlotCanvas.py
+- PlotCanvasLegacy.py
+- VisPyTesselators.py
+- VisPyVisuals.py
+
+appObjects
+- FlatCAMCNCJob.py
+- FlatCAMExcellon.py
+- FlatCAMGeometry.py
+- FlatCAMObj.py
+
+appParsers
+- ParseGerber.py
+- ParsePDF.py
+- ParseSVG.py
+
+appTools
+- ToolAlignObjects.py
+- ToolCopperThieving.py
+- ToolCorners.py
+- ToolCutOut.py
+- ToolDistance.py
+- ToolDistanceMin.py
+- ToolEtchCompensation.py
+- ToolFiducials.py
+- ToolFilm.py
+- ToolInvertGerber.py
+- ToolIsolation.py
+- ToolNCC.py
+- ToolOptimal.py
+- ToolPaint.py
+- ToolPanelize.py
+- ToolPDF.py
+- ToolProperties.py
+- ToolQRCode.py
+- ToolRulesCheck.py
+- ToolSolderPaste.py
+- ToolSub.py
+
+locale\es\LC_MESSAGES
+- strings.po
+
+preprocessors
+- Paste_1.py
+
 ⚠️ Nota
 FlatCAM 9 Neo S2 es un fork comunitario e independiente.
 Este proyecto no pretende reemplazar ni competir con otros forks, sino ofrecer una alternativa enfocada en la compatibilidad moderna y la estabilidad. Todo el crédito del trabajo original pertenece a sus respectivos autores.
