@@ -41,9 +41,11 @@ Esto eliminó corrupciones, imágenes incompletas y artefactos visuales presente
 
 Estado actual
 FlatCAM 9 Neo S2 ya está funcionando con:
+
 •	🐍 Python 3.8
 •	📐 Shapely 2.0.7
 •	🖼️ PyQt5
+
 La experiencia de instalación es mucho más limpia, la mayoría de advertencias iniciales han desaparecido y el rendimiento ha mejorado significativamente. Uno de los mayores objetivos de este fork ha sido construir un ecosistema estable y reproducible.
 
 Planes a futuro
