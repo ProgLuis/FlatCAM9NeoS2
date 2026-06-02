@@ -1,0 +1,109 @@
+FlatCAM 9 Neo S2 - Installation Guide
+
+1) Download the following files
+
+- BIN.zip
+- requirementsFlatCam9NeoS2.txt
+- Python 3.8 installer
+- Microsoft Visual C++ Redistributable for Visual Studio 2015 runtimes (x86 y x64)
+
+
+2) Open CMD and create the following folder
+
+mkdir d:\FlatCAM_9_Neo_S2
+
+
+3) Enter the project folder
+
+cd /d d:\FlatCAM_9_Neo_S2
+
+
+4) Install Python 3.8
+
+During installation:
+
+- Enable the option: Add Python 3.8 to PATH
+- Select: Disable path length limit
+
+
+5) Extract BIN.zip
+
+Place the file BIN.zip inside:
+
+d:\FlatCAM_9_Neo_S2
+
+Then extract it using:
+
+Extract Here
+
+
+6) Create the Python 3.8 virtual environment explicitly
+
+py -3.8 -m venv venv38
+
+
+7) Activate the Python 3.8 virtual environment
+
+venv38\Scripts\activate
+
+
+8) Update the base tools of the virtual environment
+
+python -m pip install --upgrade pip setuptools wheel
+
+
+9) Install the specific requirements for FlatCAM 9 Neo S2
+(Approximately 564 MB)
+
+We have 2 alternatives:
+
+
+a) Online installation
+
+python -m pip install -r requirementsFlatCam9NeoS2.txt
+
+
+b) Offline installation
+
+Place the file:
+
+FlatCAM9NeoS2_Offline_Dependencies_Python38.ZIP
+
+inside:
+
+d:\FlatCAM_9_Neo_S2
+
+Extract it using:
+
+Extract Here
+
+Then run:
+
+python -m pip install --no-index --find-links=wheelhouse -r requirementsFlatCam9NeoS2.txt
+
+
+Note:
+
+If during this step you encounter errors related to DLLs, Visual C++, or compiled libraries
+(for example: scipy, numpy, Rtree, PyQt5, etc.), it is recommended to install:
+
+Microsoft Visual C++ Redistributable 2015-2022 (x64 and x86)
+
+In some older or specific systems, the classic version:
+
+Visual C++ Redistributable for Visual Studio 2015
+
+may also help in case of incompatibilities with the modern version.
+
+
+10) Verify that the virtual environment is still active
+
+python --version
+
+Expected result: Python 3.8
+
+
+11) Run FlatCAM 9 Neo S2
+
+cd bin
+python flatcam.py
