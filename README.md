@@ -65,6 +65,8 @@ Shapely 2.0.7
 numpy X.X.X
 etc
 
+Link de descarga: https://github.com/ProgLuis/FlatCAM9NeoS2/releases/tag/V9
+
 ⚠️ Nota
 FlatCAM 9 Neo S2 es un fork comunitario e independiente.
 Este proyecto no pretende reemplazar ni competir con otros forks, sino ofrecer una alternativa enfocada en la compatibilidad moderna y la estabilidad. Todo el crédito del trabajo original pertenece a sus respectivos autores.
