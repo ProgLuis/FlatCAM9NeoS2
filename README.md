@@ -1,5 +1,6 @@
 # FlatCAM9NeoS2
 Repositorio de FlatCAM 9 Neo S2, Fork de FlatCAM 8.994 Beta
+Lanzamiento: 01/06/2026 
 
 FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition)
 “De la necesidad, nació la evolución”
