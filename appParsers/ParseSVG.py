@@ -28,6 +28,14 @@
 # https://github.com/ProgLuis/FlatCAM9NeoS2                   #
 # ########################################################## ##
 
+# Neo S2 - 2026/06/18
+# Proteus SVG Compatibility MVP
+# Added support for:
+# - inherited SVG styles (stroke, stroke-width, fill)
+# - stroke-to-solid conversion
+# - improved SVG point parsing
+# - Proteus SVG drill extraction
+
 # import xml.etree.ElementTree as ET
 from lxml import etree as ET
 from svg.path import Line, Arc, CubicBezier, QuadraticBezier, parse_path

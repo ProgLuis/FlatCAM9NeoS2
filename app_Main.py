@@ -16,6 +16,11 @@
 # https://github.com/ProgLuis/FlatCAM9NeoS2                   #
 # ########################################################## ##
 
+# Neo S2 - 2026/06/18
+# Proteus SVG Compatibility MVP
+# Automatic creation of Excellon objects
+# from detected drill information in Proteus SVG files.
+
 import urllib.request
 import urllib.parse
 import urllib.error

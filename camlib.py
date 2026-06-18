@@ -15,6 +15,13 @@
 # https://github.com/ProgLuis/FlatCAM9NeoS2                   #
 # ########################################################## ##
 
+# Neo S2 - 2026/06/18
+# Proteus SVG Compatibility MVP
+# Added SVG geometry cleanup:
+# - controlled polygon union
+# - SVG background filtering
+# - safer geometry generation from Proteus exports
+
 from PyQt5 import QtWidgets, QtCore
 from io import StringIO
 
