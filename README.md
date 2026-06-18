@@ -145,3 +145,28 @@ preprocessors
 ⚠️ Nota
 FlatCAM 9 Neo S2 es un fork comunitario e independiente.
 Este proyecto no pretende reemplazar ni competir con otros forks, sino ofrecer una alternativa enfocada en la compatibilidad moderna y la estabilidad. Todo el crédito del trabajo original pertenece a sus respectivos autores.
+
+
+## New Features in FlatCAM 9 Neo S2
+## 18/06/2026
+
+### SVG Proteus Compatibility
+
+FlatCAM 9 Neo S2 includes improved compatibility with SVG files exported by Proteus.
+
+Implemented features:
+
+* Correct SVG scaling using viewBox dimensions
+* Improved SVG polyline parsing
+* Support for inherited stroke-width from SVG groups
+* Conversion of SVG strokes into solid geometry
+* Automatic extraction of drill locations from Proteus SVG files
+* Automatic creation of Excellon objects from detected drill information
+
+Workflow:
+
+Proteus SVG
+→ Geometry Object
+→ Excellon Object
+→ CNC Job
+→ CNC3018
