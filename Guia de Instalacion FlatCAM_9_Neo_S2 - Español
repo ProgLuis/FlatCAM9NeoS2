@@ -1,0 +1,66 @@
+Guia de instalación - FlatCAM_9_Neo_S2
+
+1) Descarga lo siguientes archivos:
+- BIN.zip
+- requirementsFlatCam9NeoS2.txt
+- instalador de Python 3.8
+- Microsoft Visual C++ Redistributable for Visual Studio 2015 runtimes (x86 y x64)
+
+2) Ingresar al CMD, crea la ruta: d:\FlatCAM_9_Neo_S2
+mkdir d:\FlatCAM_9_Neo_S2
+
+3) En el CMD, ingresar a la carpeta: d:\FlatCAM_9_Neo_S2
+
+4) Instalar Python 3.8
+Durante la instalacion:
+-Emplea la opcion: "Add python 3.8 to path"
+-Selecciona: Disable path length limit
+
+5) Ubicar el archivo BIN.ZIP dentro de la carpeta: d:\FlatCAM_9_Neo_S2 y descomprimirlo con la opcion "Extraer aqui" 
+
+6) Crear Entorno virtual Python 3.8 explicitamente
+py -3.8 -m venv venv38
+
+7) Ingresamos al entorno virtual python 3.8
+venv38\Scripts\activate
+
+8) Actualizamos las herramientas base del entorno virtual Python
+python -m pip install --upgrade pip setuptools wheel
+
+9) Instalamos los requerimientos especificos para FlatCam 9 Neo S2 (Aproximadamente 564 MB)
+Tenemos 2 alternativas:
+
+a) Instalacion Online
+python -m pip install -r requirementsFlatCam9NeoS2.txt
+
+b) Instalacion Offline
+Ubicar el archivo FlatCAM9NeoS2_Offline_Dependencies_Python38.ZIP dentro de la carpeta: d:\FlatCAM_9_Neo_S2 
+y descomprimir el archivo con la opcion "Extraer aqui"
+
+Ejecutar en el CMD:
+python -m pip install --no-index --find-links=wheelhouse -r requirementsFlatCam9NeoS2.txt
+
+Nota: Si durante la instalación de este paso, aparecen errores relacionados con DLLs, Visual C++ o librerías compiladas 
+(por ejemplo: scipy, numpy, Rtree, PyQt5, etc.), se recomienda instalar Microsoft Visual C++ Redistributable 2015-2022 (x64 y x86).
+
+En algunos sistemas antiguos o específicos, la versión clásica “Visual C++ Redistributable para Visual Studio 2015” 
+también puede ayudar en caso de incompatibilidades con la versión moderna.
+
+10) Verificamos que el entorno virtual siga activo.
+python --version
+
+Resultado esperado: Python 3.8
+
+11) Para ejecutar el Flatcam 9 Neo S2
+cd bin
+python flatcam.py
+
+
+
+
+
+
+
+
+
+
