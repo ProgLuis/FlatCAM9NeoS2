@@ -81,7 +81,7 @@ from appObjects.AppObject import AppObject
 # FlatCAM Parsing files
 from appParsers.ParseExcellon import Excellon
 from appParsers.ParseGerber import Gerber
-from appParsers.ParseSVG import extract_proteus_svg_drills, svgparselength
+from appParsers.ParseSVG import extract_proteus_svg_drills, svg_physical_scale, svg_source_advisor
 from camlib import to_dict, dict2obj, ET, ParseError, Geometry, CNCjob
 
 # FlatCAM appGUI
@@ -1374,7 +1374,7 @@ class App(QtCore.QObject):
 
         # signal to be called when the app is quiting
         self.app_quit.connect(self.quit_application, type=Qt.QueuedConnection)
-        self.message.connect(lambda: message_dialog(parent=self.ui))
+        self.message.connect(self.show_message, type=Qt.QueuedConnection)
         # self.progress.connect(self.set_progress_bar)
 
         # signals emitted when file state change
@@ -2730,6 +2730,11 @@ class App(QtCore.QObject):
         if loc is None:
             loc = os.path.dirname(__file__)
         return loc
+
+    @QtCore.pyqtSlot(str, str, str)
+    def show_message(self, title, message, kind):
+        """Display application dialogs on the GUI thread."""
+        message_dialog(title=title, message=message, kind=kind, parent=self.ui)
 
     @QtCore.pyqtSlot(str)
     @QtCore.pyqtSlot(str, bool)
@@ -10096,6 +10101,22 @@ class MenuFileHandlers(QtCore.QObject):
             return
 
         units = self.defaults['units'].upper()
+        advisor = svg_source_advisor(filename)
+        advisor_shell_message = advisor.get('shell_message', advisor['message'])
+
+        if advisor['message_level'] == 'warning':
+            self.inform.emit('[WARNING_NOTCL] %s: %s' % (advisor['title'], advisor_shell_message))
+            shown_key = (filename, advisor['scale_status'])
+            if not hasattr(self.app, 'svg_source_advisor_warnings'):
+                self.app.svg_source_advisor_warnings = set()
+
+            if shown_key not in self.app.svg_source_advisor_warnings:
+                self.app.svg_source_advisor_warnings.add(shown_key)
+                self.app.message.emit(advisor['title'], advisor['message'], 'warning')
+        else:
+            advisor_message = '%s: %s' % (advisor['title'], advisor_shell_message)
+            self.inform[str, bool].emit(advisor_message, False)
+            self.app.inform_shell[str].emit(advisor_message)
 
         def obj_init(geo_obj, app_obj):
             geo_obj.import_svg(filename, obj_type, units=units)
@@ -10163,7 +10184,9 @@ class MenuFileHandlers(QtCore.QObject):
             try:
                 svg_tree = ET.parse(filename)
                 svg_root = svg_tree.getroot()
-                svg_height = svgparselength(svg_root.get('height'))[0]
+                # Use the same resolved physical height as Geometry.import_svg().
+                # Illustrator commonly omits height and relies on XMP MaxPageSize.
+                svg_height = svg_physical_scale(svg_root)['height']
 
                 flipped_tools = {}
                 for tool_id, tool in tools.items():

@@ -1245,11 +1245,12 @@ class Geometry(object):
         # Change origin to bottom left
         # h = float(svg_root.get('height'))
         # w = float(svg_root.get('width'))
-        h = svgparselength(svg_root.get('height'))[0]  # TODO: No units support yet
+        scale_info = svg_physical_scale(svg_root)
+        h = scale_info['height']
 
         units = self.app.defaults['units'] if units is None else units
         res = self.app.defaults['geometry_circle_steps']
-        factor = svgparse_viewbox(svg_root)
+        factor = scale_info['factor']
 
         geos = getsvggeo(svg_root, object_type, units=units, res=res, factor=factor)
         if flip:

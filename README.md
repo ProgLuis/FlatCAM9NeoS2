@@ -150,7 +150,7 @@ Este proyecto no pretende reemplazar ni competir con otros forks, sino ofrecer u
 ## New Features in FlatCAM 9 Neo S2
 ## 18/06/2026
 
-### SVG Proteus Compatibility
+### SVG Proteus Compatibility MVP
 
 FlatCAM 9 Neo S2 includes improved compatibility with SVG files exported by Proteus.
 
@@ -161,7 +161,7 @@ Implemented features:
 * Support for inherited stroke-width from SVG groups
 * Conversion of SVG strokes into solid geometry
 * Automatic extraction of drill locations from Proteus SVG files
-* Automatic creation of Excellon objects from detected drill information
+* Automatic creation of Excellon objects from detected Proteus SVG drill information
 
 Workflow:
 
@@ -170,3 +170,93 @@ Proteus SVG
 → Excellon Object
 → CNC Job
 → CNC3018
+
+Validation example:
+
+* `Prueba2.SVG`:
+  * Proteus original
+  * Geometry OK
+  * Excellon OK
+  * 6 drills
+  * Drill diameter: 0.6400 mm
+
+## 19/06/2026
+
+### SVG Source Advisor and Adobe Illustrator SVG Compatibility MVP
+
+FlatCAM 9 Neo S2 now includes an experimental CAM-oriented SVG import workflow.
+
+Implemented features:
+
+* SVG source detection:
+  * Proteus Design Suite
+  * Adobe Illustrator
+  * Unknown SVG sources
+* SVG Source Advisor messages during import.
+* Physical scale reliability detection.
+* Warning when SVG files do not contain reliable physical scale information.
+* Physical scale recovery from Illustrator XMP `MaxPageSize` metadata.
+* Detection of recommended Illustrator export settings:
+  * SVG Tiny 1.2
+  * Presentation Attributes
+  * Include XMP Metadata
+  * Coordinate decimals: minimum 3, recommended 4
+  * Do not preserve Illustrator Editing Capabilities
+* Coordinate decimal precision inspection for Illustrator SVG files.
+* Warnings when observed coordinate precision is too low for CAM/CNC work.
+* Added compatibility with Proteus SVG files reexported from Adobe Illustrator.
+* Automatic extraction of drill locations from Illustrator SVG files exported with recommended settings.
+* Automatic creation of Excellon objects from detected Illustrator SVG drill information.
+* Preserved compatibility with the existing Proteus SVG workflow.
+
+Validated workflows:
+
+Adobe Illustrator SVG recommended profile
+→ XMP physical scale recovery
+→ Geometry Object
+→ Excellon Object
+→ CNC Job
+
+Recommended Illustrator export profile:
+
+* SVG Profile: SVG Tiny 1.2
+* CSS Properties: Presentation Attributes
+* Include XMP Metadata: Yes
+* Working units: millimeters (mm)
+* Coordinate decimals: minimum 3
+* Coordinate decimals recommended: 4
+* Preserve Illustrator Editing Capabilities: No
+
+Validation examples:
+
+* `Prueba2d.SVG`:
+  * Illustrator without XMP
+  * Geometry OK
+  * Excellon detected
+  * Scale warning shown
+  * Physical scale not reliable
+* `Prueba2g.SVG`:
+  * Illustrator with XMP
+  * Physical scale recovered from XMP `MaxPageSize`
+  * Geometry OK
+  * Excellon OK
+  * 6 drills
+* `Prueba2h.SVG`:
+  * Illustrator recommended profile
+  * SVG Tiny 1.2 OK
+  * Presentation Attributes OK
+  * XMP Metadata OK
+  * Coordinate decimals = 4 OK
+  * Geometry OK
+  * Excellon OK
+  * 6 drills
+  * Recommended reference profile
+
+Limitations:
+
+* SVG import remains an experimental CAM-oriented workflow.
+* Native Gerber + Excellon files remain the preferred manufacturing workflow.
+* Illustrator SVG files without `width`/`height` and without XMP `MaxPageSize` cannot provide reliable physical scale.
+* Low coordinate precision, such as 1 decimal, may introduce small geometry or drill diameter deviations.
+* Users must verify dimensions, geometry, Excellon drills and CNC paths before manufacturing.
+* Manual Illustrator-created drill conventions still require future validation.

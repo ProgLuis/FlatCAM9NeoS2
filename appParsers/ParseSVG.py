@@ -77,18 +77,369 @@ def svgparselength(lengthstr):
 
 
 def svgparse_viewbox(root):
-    val = root.get('viewBox')
-    if val is None:
-        return 1.0
+    return svg_physical_scale(root)['factor']
 
-    res = [float(x) for x in val.split()] or [float(x) for x in val.split(',')]
-    w = svgparselength(root.get('width'))[0]
-    # h = svgparselength(root.get('height'))[0]
 
-    v_w = res[2]
-    # v_h = res[3]
+def svg_read_xmp_max_page_size(svg_root):
+    """
+    Read Illustrator XMP MaxPageSize metadata when present.
 
-    return w / v_w
+    This is useful for Illustrator SVG files that omit root width/height but
+    preserve the physical page size in XMP metadata.
+
+    :param svg_root:    SVG root element
+    :return:            MaxPageSize dictionary or None
+    :rtype:             dict|None
+    """
+
+    def local_name(node):
+        if not isinstance(node.tag, str):
+            return ''
+        return node.tag.rsplit('}', 1)[-1]
+
+    for node in svg_root.iter():
+        if local_name(node) != 'MaxPageSize':
+            continue
+
+        data = {}
+        for child in node:
+            name = local_name(child)
+            value = (child.text or '').strip()
+            if name:
+                data[name] = value
+
+        try:
+            return {
+                'width': float(data.get('w')),
+                'height': float(data.get('h')),
+                'unit': data.get('unit')
+            }
+        except Exception as e:
+            log.debug("ParseSVG.svg_read_xmp_max_page_size() --> %s" % str(e))
+            return None
+
+    return None
+
+
+def svg_physical_scale(svg_root, tolerance=0.005):
+    """
+    Determine SVG physical scale factor and physical height.
+
+    Scale priority:
+    1. root width + viewBox
+    2. Illustrator XMP MaxPageSize + viewBox
+    3. factor 1.0 with missing-scale status
+
+    :param svg_root:    SVG root element
+    :param tolerance:   Relative tolerance for non-uniform XMP scale
+    :type tolerance:    float
+    :return:            Scale information
+    :rtype:             dict
+    """
+
+    viewbox = svg_root.get('viewBox')
+    default = {
+        'scale_status': 'missing',
+        'factor': 1.0,
+        'height': 0.0,
+        'viewbox': None,
+        'xmp_max_page_size': None
+    }
+
+    if viewbox is None:
+        default['scale_status'] = 'reliable'
+        return default
+
+    try:
+        viewbox_values = [float(x) for x in viewbox.replace(',', ' ').split()]
+        if len(viewbox_values) < 4:
+            return default
+    except Exception as e:
+        log.debug("ParseSVG.svg_physical_scale() viewBox --> %s" % str(e))
+        return default
+
+    vb_w = viewbox_values[2]
+    vb_h = viewbox_values[3]
+    default['height'] = vb_h
+    default['viewbox'] = viewbox_values[:4]
+
+    width_value, width_units = svgparselength(svg_root.get('width'))
+    height_value, height_units = svgparselength(svg_root.get('height'))
+
+    if width_value and vb_w:
+        default.update({
+            'scale_status': 'reliable',
+            'factor': width_value / vb_w,
+            'height': height_value if height_value else vb_h * (width_value / vb_w),
+            'width_units': width_units,
+            'height_units': height_units
+        })
+        return default
+
+    xmp_size = svg_read_xmp_max_page_size(svg_root)
+    default['xmp_max_page_size'] = xmp_size
+    if xmp_size and xmp_size.get('unit') == 'Millimeters' and vb_w and vb_h:
+        factor_x = xmp_size['width'] / vb_w
+        factor_y = xmp_size['height'] / vb_h
+        factor_avg = (factor_x + factor_y) / 2.0
+        rel_diff = abs(factor_x - factor_y) / factor_avg if factor_avg else 0
+
+        if rel_diff <= tolerance:
+            default.update({
+                'scale_status': 'xmp_fallback',
+                'factor': factor_avg,
+                'height': xmp_size['height'],
+                'factor_x': factor_x,
+                'factor_y': factor_y,
+                'relative_diff': rel_diff
+            })
+        else:
+            default.update({
+                'scale_status': 'non_uniform',
+                'factor': factor_avg if factor_avg else 1.0,
+                'height': xmp_size['height'],
+                'factor_x': factor_x,
+                'factor_y': factor_y,
+                'relative_diff': rel_diff
+            })
+        return default
+
+    return default
+
+
+def svg_geometry_decimal_precision(svg_root):
+    """Return the maximum decimal precision observed in SVG geometry coordinates.
+
+    Illustrator does not store the export precision setting explicitly, so
+    this reports evidence from serialized coordinates rather than certifying
+    the original export option.
+    """
+
+    geometry_attributes = {
+        'path': ['d'],
+        'polyline': ['points'],
+        'polygon': ['points'],
+        'line': ['x1', 'y1', 'x2', 'y2'],
+        'rect': ['x', 'y', 'width', 'height', 'rx', 'ry'],
+        'circle': ['cx', 'cy', 'r'],
+        'ellipse': ['cx', 'cy', 'rx', 'ry']
+    }
+    number_re = re.compile(r'[+-]?(?:\d+\.\d+|\d+|\.\d+)(?:[Ee][+-]?\d+)?')
+    max_decimals = None
+
+    for node in svg_root.iter():
+        if not isinstance(node.tag, str):
+            continue
+
+        kind = node.tag.rpartition('}')[-1]
+        for attribute in geometry_attributes.get(kind, []):
+            value = node.get(attribute)
+            if value is None:
+                continue
+
+            for match in number_re.finditer(value):
+                mantissa = re.split('[Ee]', match.group(0))[0]
+                decimals = len(mantissa.rpartition('.')[2]) if '.' in mantissa else 0
+                max_decimals = decimals if max_decimals is None else max(max_decimals, decimals)
+
+    return max_decimals
+
+
+def svg_source_advisor(svg_filename):
+    """
+    Analyze SVG source and physical scale reliability.
+
+    Pure helper: no GUI and no PyQt dependencies.
+
+    :param svg_filename:    SVG filename
+    :type svg_filename:     str
+    :return:                SVG source advisory information
+    :rtype:                 dict
+    """
+
+    try:
+        svg_tree = ET.parse(svg_filename)
+        svg_root = svg_tree.getroot()
+        with open(svg_filename, 'r', encoding='utf-8', errors='ignore') as svg_file:
+            svg_text = svg_file.read()
+    except Exception as e:
+        log.debug("ParseSVG.svg_source_advisor() --> %s" % str(e))
+        return {
+            'source': 'unknown',
+            'category': 'unknown',
+            'scale_status': 'missing',
+            'factor': 1.0,
+            'height': 0.0,
+            'title': 'SVG scale warning',
+            'message': 'This SVG could not be analyzed for reliable physical size information.',
+            'message_level': 'warning'
+        }
+
+    text_lower = svg_text.lower()
+    source = 'unknown'
+    category = 'unknown'
+
+    if 'adobe illustrator' in text_lower or 'creatortool' in text_lower:
+        source = 'illustrator'
+        category = 'vector'
+    elif 'proteus design suite' in text_lower or 'proteus' in text_lower:
+        source = 'proteus'
+        category = 'pcb'
+    elif 'inkscape' in text_lower:
+        source = 'inkscape'
+        category = 'vector'
+    elif 'coreldraw' in text_lower or 'corel' in text_lower:
+        source = 'coreldraw'
+        category = 'vector'
+    elif 'affinity' in text_lower:
+        source = 'affinity'
+        category = 'vector'
+
+    scale_info = svg_physical_scale(svg_root)
+    scale_status = scale_info['scale_status']
+
+    uses_css_styles = any(
+        str(node.tag).rpartition('}')[-1] == 'style' or
+        node.get('class') is not None or
+        node.get('style') is not None
+        for node in svg_root.iter()
+    )
+    xmp_size = scale_info.get('xmp_max_page_size')
+    svg_tiny_12 = (
+        svg_root.get('version') == '1.2' and
+        str(svg_root.get('baseProfile', '')).lower() == 'tiny'
+    )
+    uses_presentation_attributes = uses_css_styles is False
+    has_xmp_physical_size = xmp_size is not None and xmp_size.get('unit') == 'Millimeters'
+    geometry_decimal_precision = svg_geometry_decimal_precision(svg_root)
+    decimal_precision_ok = geometry_decimal_precision is not None and geometry_decimal_precision >= 3
+    illustrator_profile_compliant = (
+        svg_tiny_12 and
+        uses_presentation_attributes and
+        has_xmp_physical_size
+    )
+    illustrator_profile_advice = (
+        ' Recommended Illustrator export profile: SVG Tiny 1.2, Presentation Attributes, '
+        'Include XMP Metadata.'
+    )
+
+    title = 'SVG scale warning'
+    message_level = 'warning' if scale_status in ['missing', 'non_uniform'] else 'info'
+
+    if source == 'proteus':
+        title = 'Proteus SVG detected'
+        message = (
+            'This SVG appears to have been exported from Proteus Design Suite. '
+            'FlatCAM 9 Neo S2 includes experimental Proteus SVG compatibility. '
+            'Please verify geometry, dimensions and generated CNC paths before manufacturing.'
+        )
+    elif source == 'illustrator' and scale_status == 'xmp_fallback':
+        title = 'Adobe Illustrator SVG detected'
+        message = (
+            'This SVG appears to have been exported from Adobe Illustrator. '
+            'Physical scale information was recovered from XMP MaxPageSize metadata.'
+        )
+        if illustrator_profile_compliant:
+            message += (
+                ' Recommended Illustrator export profile detected: SVG Tiny 1.2, Presentation Attributes, '
+                'Include XMP Metadata.'
+            )
+        else:
+            message += illustrator_profile_advice
+    elif source == 'illustrator' and scale_status in ['missing', 'non_uniform']:
+        title = 'Adobe Illustrator SVG detected - scale warning'
+        message = (
+            'This SVG appears to have been exported from Adobe Illustrator, but it does not contain reliable '
+            'physical size information. FlatCAM will use a fallback scale. The resulting geometry may not match '
+            'the intended physical size.'
+        )
+        if illustrator_profile_compliant is False:
+            message += illustrator_profile_advice
+    elif source == 'illustrator':
+        title = 'Adobe Illustrator SVG detected'
+        message = (
+            'This SVG appears to have been exported from Adobe Illustrator. '
+            'Physical scale information was read from the SVG dimensions.'
+        )
+        if illustrator_profile_compliant:
+            message += (
+                ' Recommended Illustrator export profile detected: SVG Tiny 1.2, Presentation Attributes, '
+                'Include XMP Metadata.'
+            )
+        else:
+            message += illustrator_profile_advice
+    elif category == 'vector' and scale_status in ['missing', 'non_uniform']:
+        title = 'Vector SVG scale warning'
+        message = (
+            'This SVG appears to come from a vector graphics editor, but it does not contain reliable physical '
+            'size information. FlatCAM will use a fallback scale. Please verify dimensions before generating CNC jobs.'
+        )
+    else:
+        message = (
+            'This SVG does not contain reliable physical size information. FlatCAM will use a fallback scale. '
+            'Please verify object dimensions before generating CNC jobs.'
+        )
+
+    shell_message = message
+    illustrator_shell_profile_compliant = (
+        illustrator_profile_compliant and decimal_precision_ok
+    )
+    if source == 'illustrator':
+        if scale_status == 'xmp_fallback':
+            scale_message = 'Physical scale recovered from XMP MaxPageSize metadata.'
+        elif scale_status == 'reliable':
+            scale_message = 'Physical scale read from the SVG dimensions.'
+        elif scale_status == 'non_uniform':
+            scale_message = 'XMP physical scale is non-uniform; verify the imported dimensions.'
+        else:
+            scale_message = 'Physical scale metadata is missing; fallback scale is in use.'
+
+        precision_text = 'not detected' if geometry_decimal_precision is None else str(geometry_decimal_precision)
+        detected_settings = (
+            'Detected settings: SVG Tiny 1.2=%s; Presentation Attributes=%s; XMP Metadata=%s; '
+            'observed coordinate decimals=%s (%s, minimum 3, recommended 4).'
+        ) % (
+            'OK' if svg_tiny_12 else 'NOT DETECTED',
+            'OK' if uses_presentation_attributes else 'NOT DETECTED',
+            'OK' if has_xmp_physical_size else 'NOT DETECTED',
+            precision_text,
+            'OK' if decimal_precision_ok else 'LOW'
+        )
+        recommended_profile = (
+            'Recommended Illustrator export profile: SVG Tiny 1.2 with Presentation Attributes; '
+            'Include XMP Metadata; Decimals: minimum 3, recommended 4; '
+            'Do not preserve Illustrator Editing Capabilities.'
+        )
+
+        if illustrator_shell_profile_compliant:
+            shell_message = '%s Recommended detectable Illustrator export configuration detected. %s %s' % (
+                scale_message, detected_settings,
+                'Recommendation: Do not preserve Illustrator Editing Capabilities.'
+            )
+        else:
+            shell_message = '%s Recommended Illustrator export configuration is incomplete. %s %s' % (
+                scale_message, detected_settings, recommended_profile
+            )
+
+    advisor = {
+        'source': source,
+        'category': category,
+        'scale_status': scale_status,
+        'factor': scale_info['factor'],
+        'height': scale_info['height'],
+        'title': title,
+        'message': message,
+        'shell_message': shell_message,
+        'message_level': message_level,
+        'illustrator_profile_compliant': illustrator_profile_compliant,
+        'illustrator_shell_profile_compliant': illustrator_shell_profile_compliant,
+        'svg_tiny_12': svg_tiny_12,
+        'uses_presentation_attributes': uses_presentation_attributes,
+        'has_xmp_physical_size': has_xmp_physical_size,
+        'geometry_decimal_precision': geometry_decimal_precision,
+        'scale_info': scale_info
+    }
+    return advisor
 
 
 def path2shapely(path, object_type, res=1.0, units='MM', factor=1.0):
@@ -541,7 +892,15 @@ def svgextract_circular_paths(node, root=None, factor=1.0, inherited_style=None,
     if root is None:
         root = node
 
+    # Illustrator XMP metadata may contain comments and processing instructions
+    # whose lxml tag is not a string. They cannot contain CAM geometry.
+    if not isinstance(node.tag, str):
+        return []
+
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
+    if kind in ['metadata', 'style', 'title', 'desc']:
+        return []
+
     effective_style = svgget_effective_style(node, inherited_style=inherited_style)
     circles = []
 
@@ -631,7 +990,8 @@ def extract_proteus_svg_drills(svg_filename, center_tolerance=0.02, diameter_tol
         fill = circle.get('fill')
         stroke = circle.get('stroke')
         is_white_fill = svgis_white_color(fill)
-        is_stroke_none = stroke is not None and stroke.strip().lower() == 'none'
+        # Illustrator omits stroke when a filled path has no visible outline.
+        is_stroke_none = stroke is None or not stroke.strip() or stroke.strip().lower() == 'none'
 
         if is_white_fill and is_stroke_none:
             hole_candidates.append(circle)
@@ -762,7 +1122,13 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
     if root is None:
         root = node
 
+    if not isinstance(node.tag, str):
+        return None
+
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
+    if kind in ['metadata', 'style', 'title', 'desc']:
+        return None
+
     effective_style = svgget_effective_style(node, inherited_style=inherited_style)
     geo = []
 
@@ -871,7 +1237,13 @@ def getsvgtext(node, object_type, units='MM'):
     :return:            List of Shapely geometry
     :rtype:             list
     """
+    if not isinstance(node.tag, str):
+        return None
+
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
+    if kind in ['metadata', 'style', 'title', 'desc']:
+        return None
+
     geo = []
 
     # Recurse

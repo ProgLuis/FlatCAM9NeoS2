@@ -1,3 +1,126 @@
+=================================================
+FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition)
+Maintainer: Luis Enrique Yacupoma Aguirre
+=================================================
+
+19.06.2026
+
+SVG Source Advisor and Adobe Illustrator SVG Compatibility MVP
+
+* Added SVG Source Advisor.
+* Added SVG source detection for Proteus Design Suite, Adobe Illustrator and unknown SVG sources.
+* Added user guidance messages during SVG import.
+* Added physical scale reliability detection.
+* Added warning when SVG files do not contain reliable physical scale information.
+* Added support for physical scale recovery from Illustrator XMP `MaxPageSize` metadata.
+* Added detection of recommended Illustrator SVG export settings.
+* Added coordinate decimal precision inspection for Illustrator SVG files.
+* Added warnings when coordinate precision is too low for CAM/CNC work.
+* Added compatibility with Proteus SVG files reexported from Adobe Illustrator.
+* Added automatic SVG drill extraction for Illustrator SVG files exported with recommended settings.
+* Added automatic Excellon object creation from detected Illustrator SVG drill holes.
+* Fixed Illustrator SVG scale issues when `width`/`height` are missing.
+* Fixed SVG drill Y-axis alignment by using resolved physical SVG height consistently.
+* Fixed SVG drill extraction when Illustrator exports white holes with a missing `stroke` attribute.
+* Fixed recursion issues caused by Illustrator XMP metadata nodes.
+* Preserved compatibility with the existing Proteus SVG workflow.
+
+Validated:
+
+* `Prueba2d.SVG`:
+  Adobe Illustrator SVG without XMP.
+  Geometry OK.
+  Excellon detected.
+  Scale warning shown because physical scale metadata is missing.
+* `Prueba2g.SVG`:
+  Adobe Illustrator SVG with XMP.
+  Physical scale recovered from XMP `MaxPageSize`.
+  Geometry OK.
+  Excellon OK.
+  6 drills.
+* `Prueba2h.SVG`:
+  Adobe Illustrator SVG using the recommended export profile.
+  SVG Tiny 1.2 OK.
+  Presentation Attributes OK.
+  XMP Metadata OK.
+  Coordinate decimals = 4 OK.
+  Geometry OK.
+  Excellon OK.
+  6 drills.
+
+Recommended Illustrator export profile:
+
+* SVG Tiny 1.2.
+* Presentation Attributes.
+* Include XMP Metadata.
+* Working units: millimeters.
+* Coordinate decimals: minimum 3, recommended 4.
+* Do not preserve Illustrator Editing Capabilities.
+
+Notes:
+
+* SVG import remains experimental.
+* Native Gerber + Excellon remains the preferred manufacturing workflow.
+* Users must verify dimensions, geometry, Excellon drills and CNC paths before manufacturing.
+* Illustrator SVG files without `width`/`height` and without XMP `MaxPageSize` cannot provide reliable physical scale.
+* Low coordinate precision, such as 1 decimal, may introduce small geometry or drill diameter deviations.
+* Manual Illustrator-created drill conventions still require future validation.
+
+18.06.2026
+
+SVG Proteus Compatibility MVP
+
+* Improved compatibility with SVG files exported by Proteus Design Suite.
+* Added correct SVG scaling using `viewBox` dimensions.
+* Improved SVG polyline parsing.
+* Added support for inherited `stroke-width` from SVG groups.
+* Added conversion of SVG strokes into solid geometry.
+* Added automatic extraction of drill locations from Proteus SVG files.
+* Added automatic creation of Excellon objects from detected Proteus SVG drill information.
+* Validated workflow: Proteus SVG → Geometry Object → Excellon Object → CNC Job → CNC3018.
+
+Validated:
+
+* `Prueba2.SVG`:
+  Proteus Design Suite SVG.
+  Geometry OK.
+  Excellon OK.
+  6 drills.
+  Tool diameter 0.6400 mm.
+
+01.06.2026
+
+FlatCAM 9 Neo S2 Initial Release
+
+* Released FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition).
+* Fork based on FlatCAM 8.994 Beta.
+* Modernized the codebase for Python 3.8.
+* Adapted the project for Shapely 2.0.7 compatibility.
+* Preserved PyQt5 compatibility.
+* Reduced dependency conflicts and improved startup stability.
+* Kept rasterio as optional due to installation issues.
+* Modernized the Film PCB export workflow.
+* Improved PDF export behavior.
+* Added A4 portrait/landscape centering improvements.
+* Replaced the old SVG → svglib → renderPM → PNG path with SVG → QtSvg → QImage → PNG.
+* Reduced PNG export artifacts and rendering corruption.
+* Preserved original FlatCAM credits and added Neo S2 maintainer identity.
+
+Validated environment:
+
+* Python 3.8.
+* PyQt5 5.15.11.
+* Qt 5.15.2.
+* Shapely 2.0.7.
+* matplotlib 3.5.3.
+* numpy 1.21.6.
+* VisPy 0.9.0.
+
+
+=================================================
+Original FlatCAM Beta changelog follows
+=================================================
+
 FlatCAM BETA (c) 2019 - by Marius Stanciu
 Based on FlatCAM: 
 2D Computer-Aided PCB Manufacturing by (c) 2014-2016 Juan Pablo Caram
