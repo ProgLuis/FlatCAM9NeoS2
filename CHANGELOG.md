@@ -3,6 +3,127 @@ FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition)
 Maintainer: Luis Enrique Yacupoma Aguirre
 =================================================
 
+21.06.2026
+
+Adobe Illustrator SVG Tiny 1.2 Compatibility Suite
+
+* Expanded Adobe Illustrator SVG Tiny 1.2 support from MVP compatibility to a broader CAM-oriented workflow.
+* Added practical support for common Illustrator drawing tools and exported SVG structures.
+* Added support for CAM-oriented SVG artwork created directly in Adobe Illustrator without requiring a Proteus SVG as its starting point.
+* Improved the workflow Proteus SVG -> Adobe Illustrator editing/customization -> FlatCAM 9 Neo S2.
+* Enabled users to refine, personalize or extend Proteus PCB-style SVG artwork in Illustrator before importing it into FlatCAM.
+* Confirmed support for SVG Tiny 1.2 exported with the recommended Illustrator profile.
+* Preserved Proteus SVG compatibility and Proteus SVG reexported from Illustrator.
+* Preserved XMP `MaxPageSize` physical scale recovery.
+* Preserved SVG Source Advisor diagnostics and coordinate decimal precision checks.
+
+Validated Illustrator tools and SVG cases:
+
+* Line Segment Tool: PASS.
+* Rectangle Tool: PASS.
+* Rounded Rectangle: PASS.
+* Circle Tool: PASS.
+* Ellipse Tool: PASS.
+* Polygon Tool: PASS.
+* Pen Tool open path with visible fill: PASS.
+* Pen Tool open path with `fill="none"` and implicit stroke: PASS.
+* Compound Path with contained object/hole: PASS.
+* Compound Path with `fill="none"` and visible stroke: PASS.
+* Pathfinder Unite: PASS.
+* Pathfinder Minus Front: PASS.
+* Flattened Clipping Mask exported as transformed geometry: PASS.
+* Symbol / Use exported as expanded geometry: PASS.
+* Multi-layer Illustrator SVG: PASS.
+* Superposed objects in separate visible layers: PASS.
+* Illustrator manual drill detection: PASS.
+
+Geometry improvements:
+
+* Added safer fill/stroke interpretation for Illustrator SVG geometry.
+* Added support for implicit SVG `stroke-width` when stroke is visible and width is omitted.
+* Added stroke materialization for paths and basic shapes.
+* Added fill/stroke behavior for `circle`, `ellipse` and `rect`.
+* Added physical scaling for SVG rectangle `width`, `height`, `rx` and `ry`.
+* Added safe virtual fill closure for open Illustrator polylines with visible fill.
+* Added improved compound path handling for normal contained holes.
+* Corrected SVG matrix ordering and physical scaling of transform translations.
+* Added correct physical handling for `matrix`, `translate`, `rotate`, `scale` and `skew` transforms.
+* Added support for white-circle manual drill markers.
+* Added central SVG visibility handling so hidden layers, hidden groups and hidden objects are not processed.
+* Added protection against `display:none`, `visibility:hidden`, `visibility:collapse` and `opacity<=0`.
+* Added protection against importing unreferenced geometry directly from `defs` or `symbol`.
+* Added support for multiple visible Illustrator layers.
+* Added support for visible overlapping objects stored in separate Illustrator layers.
+* Confirmed that visible layers are imported and consolidated into valid CAM geometry.
+
+Manual Illustrator drill convention:
+
+* Manual drills can be drawn directly in Illustrator as true circles.
+* The circle must use white fill and a visible dark or black stroke.
+* The geometric circle diameter is interpreted as the drill tool diameter.
+* Stroke width is a visual/detection aid and is not added to the drill diameter.
+* Accepted manual drill diameter range: 0.2 mm to 6.0 mm.
+* Ellipses are rejected as drills.
+* Large white circles above 6.0 mm are rejected.
+* Black solid circles are rejected.
+* White circles without a visible dark stroke are rejected.
+* Valid detected drill circles create an Excellon object automatically under the Project panel Excellon branch.
+* Drill tools are grouped by diameter.
+
+Recommended Adobe Illustrator SVG export profile:
+
+* SVG Profile: SVG Tiny 1.2.
+* CSS Properties: Presentation Attributes.
+* Include XMP Metadata: Yes.
+* Working units: millimeters.
+* Coordinate decimals: minimum 3, recommended 4.
+* Preserve Illustrator Editing Capabilities: No.
+
+Multi-layer and visibility behavior:
+
+* Multiple visible Illustrator layers are supported.
+* Visible objects from different layers are imported into a common Geometry object.
+* Overlapping visible black regions are consolidated as CAM geometry.
+* Hidden layers, groups and objects are ignored.
+* Hidden objects do not create Geometry.
+* Hidden drill markers do not create Excellon drills.
+* Text, Geometry, Proteus drill extraction and Illustrator manual drill extraction use visibility-safe behavior.
+
+Known limitation and user guidance:
+
+* Complex Compound Paths created by partially overlapping Illustrator shapes are not fully supported with exact visual fidelity.
+* This limitation is detected and reported in the Shell when possible.
+* The warning includes the problematic Illustrator layer name when available.
+* Import continues after the warning; Geometry and Excellon creation are not cancelled.
+* For PCB/CAM workflows, use Illustrator Pathfinder operations instead of overlapping Compound Paths.
+* Recommended alternatives include Pathfinder Unite, Minus Front, Exclude and Intersect, or expanding/flattening geometry before SVG export.
+* Compound Paths with normal contained holes remain supported.
+
+Validated integration tests:
+
+* Illustrator SVG laboratory: PASS.
+* Multi-layer Illustrator SVG baseline: PASS.
+* Multi-layer superposed objects: PASS.
+* Manual Illustrator drills: PASS.
+* Proteus original SVG: PASS.
+* Proteus SVG reexported through Illustrator: PASS.
+* `Prueba2.SVG`: 6 drills preserved.
+* `Prueba2d.SVG`: scale warning preserved.
+* `Prueba2g.SVG`: XMP scale recovery preserved.
+* `Prueba2h.SVG`: recommended Illustrator profile detected.
+* `AI_Manual_Drills_01.svg`: manual drills detected and Excellon created.
+* Hidden layer and hidden drill synthetic tests: PASS.
+* Transform tests for matrix, translate, rotate, scale and skew: PASS.
+
+Notes:
+
+* This compatibility applies to SVG files exported from Adobe Illustrator, not native `.AI` documents.
+* SVG import remains experimental but is significantly more practical for Illustrator-based PCB artwork workflows.
+* Native Gerber + Excellon remains the preferred manufacturing workflow.
+* Users must verify dimensions, geometry, drill tools, drill locations and CNC paths before manufacturing.
+* The main supported Illustrator workflow is SVG Tiny 1.2 with XMP metadata and 4 coordinate decimals.
+* This update supports both personalizing Proteus-generated SVGs in Illustrator and creating controlled CAM-oriented Illustrator drawings from scratch.
+
 19.06.2026
 
 SVG Source Advisor and Adobe Illustrator SVG Compatibility MVP

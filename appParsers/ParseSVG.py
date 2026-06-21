@@ -44,6 +44,7 @@ from svg.path import Line, Arc, CubicBezier, QuadraticBezier, parse_path
 import svg.path
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.affinity import skew, affine_transform, rotate
+from shapely.ops import unary_union
 import numpy as np
 
 from appParsers.ParseFont import *
@@ -582,8 +583,8 @@ def svgrect2shapely(rect, n_points=32, factor=1.0):
     :type factor:       float
     :return:            shapely.geometry.polygon.LinearRing
     """
-    w = svgparselength(rect.get('width'))[0]
-    h = svgparselength(rect.get('height'))[0]
+    w = svgparselength(rect.get('width'))[0] * factor
+    h = svgparselength(rect.get('height'))[0] * factor
 
     x_obj = rect.get('x')
     if x_obj is not None:
@@ -598,9 +599,7 @@ def svgrect2shapely(rect, n_points=32, factor=1.0):
         y = 0
 
     rxstr = rect.get('rx')
-    rxstr = rxstr * factor if rxstr else rxstr
     rystr = rect.get('ry')
-    rystr = rystr * factor if rystr else rystr
 
     if rxstr is None and rystr is None:  # Sharp corners
         pts = [
@@ -608,8 +607,8 @@ def svgrect2shapely(rect, n_points=32, factor=1.0):
         ]
 
     else:  # Rounded corners
-        rx = 0.0 if rxstr is None else svgparselength(rxstr)[0]
-        ry = 0.0 if rystr is None else svgparselength(rystr)[0]
+        rx = 0.0 if rxstr is None else svgparselength(rxstr)[0] * factor
+        ry = 0.0 if rystr is None else svgparselength(rystr)[0] * factor
 
         n_points = int(n_points / 4 + 0.5)
         t = np.arange(n_points, dtype=float) / n_points / 4
@@ -643,6 +642,7 @@ def svgrect2shapely(rect, n_points=32, factor=1.0):
             [(x, y + h - ry), (x, y + ry)] + \
             lower_left
 
+    # TODO: honor fill="none", visible stroke geometry and stroke join/cap semantics for SVG rectangles.
     return Polygon(pts).buffer(0)
     # return LinearRing(pts)
 
@@ -769,13 +769,61 @@ def svgget_effective_style(node, inherited_style=None):
     if stroke_width is not None:
         effective_style['stroke-width'] = stroke_width
 
+    stroke_opacity = node.get('stroke-opacity')
+    if stroke_opacity is not None:
+        effective_style['stroke-opacity'] = stroke_opacity
+
     fill = node.get('fill')
     if fill is not None:
         effective_style['fill'] = fill
 
+    fill_opacity = node.get('fill-opacity')
+    if fill_opacity is not None:
+        effective_style['fill-opacity'] = fill_opacity
+
+    opacity = node.get('opacity')
+    if opacity is not None:
+        effective_style['opacity'] = opacity
+
+    display = node.get('display')
+    if display is not None:
+        effective_style['display'] = display
+
+    visibility = node.get('visibility')
+    if visibility is not None:
+        effective_style['visibility'] = visibility
+
     effective_style.update(svggetstyle(node))
 
     return effective_style
+
+
+def svg_node_is_visible(effective_style, ancestor_hidden=False):
+    """Return False when a node or any CAM ancestor explicitly hides its subtree."""
+
+    if ancestor_hidden:
+        return False
+
+    style = effective_style or {}
+    display = str(style.get('display', '')).strip().lower()
+    visibility = str(style.get('visibility', '')).strip().lower()
+
+    if display == 'none' or visibility in ['hidden', 'collapse']:
+        return False
+
+    opacity = style.get('opacity')
+    if opacity is not None:
+        try:
+            opacity_text = str(opacity).strip()
+            opacity_value = float(opacity_text.rstrip('%'))
+            if opacity_text.endswith('%'):
+                opacity_value /= 100.0
+            if opacity_value <= 0:
+                return False
+        except (TypeError, ValueError):
+            pass
+
+    return True
 
 
 def svggetstroke_width(node, factor=1.0, effective_style=None):
@@ -792,13 +840,27 @@ def svggetstroke_width(node, factor=1.0, effective_style=None):
     style_dict = effective_style if effective_style is not None else svgget_effective_style(node)
     stroke = style_dict.get('stroke')
 
-    if stroke is not None and stroke.strip().lower() == 'none':
+    if stroke is None or stroke.strip().lower() in ['none', 'transparent']:
         return None
+
+    for opacity_name in ['opacity', 'stroke-opacity']:
+        opacity = style_dict.get(opacity_name)
+        if opacity is None:
+            continue
+        try:
+            opacity_value = float(opacity.strip().rstrip('%'))
+            if opacity.strip().endswith('%'):
+                opacity_value /= 100.0
+            if opacity_value <= 0:
+                return None
+        except (AttributeError, TypeError, ValueError):
+            pass
 
     stroke_width = style_dict.get('stroke-width')
 
     if stroke_width is None:
-        return None
+        # SVG Tiny 1.2 initial value for a visible stroke is 1 user unit.
+        return 1.0 * factor
 
     try:
         width = svgparselength(stroke_width)[0]
@@ -875,7 +937,8 @@ def svgpath_is_closed_by_coords(path, tolerance=1e-6):
     return abs(start.real - end.real) <= tolerance and abs(start.imag - end.imag) <= tolerance
 
 
-def svgextract_circular_paths(node, root=None, factor=1.0, inherited_style=None, circle_tolerance=0.02):
+def svgextract_circular_paths(node, root=None, factor=1.0, inherited_style=None, circle_tolerance=0.02,
+                              ancestor_hidden=False):
     """
     Extract approximately circular closed paths from an SVG node.
 
@@ -898,17 +961,20 @@ def svgextract_circular_paths(node, root=None, factor=1.0, inherited_style=None,
         return []
 
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
-    if kind in ['metadata', 'style', 'title', 'desc']:
+    if kind in ['metadata', 'style', 'title', 'desc', 'defs', 'symbol']:
         return []
 
     effective_style = svgget_effective_style(node, inherited_style=inherited_style)
+    if svg_node_is_visible(effective_style, ancestor_hidden=ancestor_hidden) is False:
+        return []
+
     circles = []
 
     if len(node) > 0:
         for child in node:
             circles += svgextract_circular_paths(
                 child, root=root, factor=factor, inherited_style=effective_style,
-                circle_tolerance=circle_tolerance
+                circle_tolerance=circle_tolerance, ancestor_hidden=False
             )
         return circles
 
@@ -1065,6 +1131,271 @@ def extract_proteus_svg_drills(svg_filename, center_tolerance=0.02, diameter_tol
     }
 
 
+def extract_illustrator_svg_drills(svg_filename, min_diameter=0.2, max_diameter=6.0,
+                                   diameter_tolerance=0.01, circle_tolerance=0.002,
+                                   relative_circle_tolerance=0.005):
+    """Extract strict white-circle drill markers from an Adobe Illustrator SVG."""
+
+    svg_tree = ET.parse(svg_filename)
+    svg_root = svg_tree.getroot()
+    advisor = svg_source_advisor(svg_filename)
+    scale_info = svg_physical_scale(svg_root)
+    factor = scale_info['factor']
+    drill_candidates = []
+    rejected = []
+
+    result = {
+        'tools': {},
+        'drills': drill_candidates,
+        'rejected': rejected,
+        'factor': factor,
+        'source': advisor.get('source'),
+        'scale_status': scale_info.get('scale_status')
+    }
+
+    # Keep this experimental detector isolated from Proteus and generic SVG files.
+    if advisor.get('source') != 'illustrator':
+        result['disabled_reason'] = 'source_not_illustrator'
+        return result
+    if scale_info.get('scale_status') in ['missing', 'non_uniform']:
+        result['disabled_reason'] = 'unreliable_physical_scale'
+        return result
+
+    def opacity_is_visible(style, names):
+        for opacity_name in names:
+            opacity = style.get(opacity_name)
+            if opacity is None:
+                continue
+            try:
+                opacity_value = float(opacity.strip().rstrip('%'))
+                if opacity.strip().endswith('%'):
+                    opacity_value /= 100.0
+                if opacity_value <= 0:
+                    return False
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return True
+
+    def dark_stroke_is_visible(node, style):
+        stroke = style.get('stroke')
+        if stroke is None or svggetstroke_width(node, factor=factor, effective_style=style) is None:
+            return False
+
+        stroke_as_fill = {
+            'fill': stroke,
+            'opacity': style.get('opacity'),
+            'fill-opacity': style.get('stroke-opacity')
+        }
+        return svgfill_is_dark_visible(stroke_as_fill)
+
+    def apply_transform_chain(geometry, transform_chain):
+        transformed = [geometry]
+        # A child transform is applied before each enclosing parent transform.
+        for transform_list in transform_chain[::-1]:
+            transformed = svg_apply_transform(transformed, transform_list, factor=factor)
+        return transformed[0]
+
+    def visit(node, inherited_style=None, transform_chain=None, ancestor_hidden=False):
+        if not isinstance(node.tag, str):
+            return
+
+        kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
+        if kind in ['metadata', 'defs', 'style', 'symbol']:
+            return
+
+        effective_style = svgget_effective_style(node, inherited_style=inherited_style)
+        if svg_node_is_visible(effective_style, ancestor_hidden=ancestor_hidden) is False:
+            return
+
+        current_transforms = list(transform_chain) if transform_chain is not None else []
+        if node.get('transform'):
+            current_transforms.append(parse_svg_transform(node.get('transform')))
+
+        if kind == 'circle':
+            candidate_info = {'element': node}
+            fill = effective_style.get('fill', '#000000')
+            if not svgis_white_color(fill) or not opacity_is_visible(
+                    effective_style, ['opacity', 'fill-opacity']):
+                candidate_info['reason'] = 'fill_not_visible_white'
+                rejected.append(candidate_info)
+            elif not dark_stroke_is_visible(node, effective_style):
+                candidate_info['reason'] = 'stroke_not_visible_dark'
+                rejected.append(candidate_info)
+            else:
+                circle_geometry = svgcircle2shapely(node, n_points=64, factor=factor)
+                center_geometry = Point(circle_geometry.centroid.x, circle_geometry.centroid.y)
+                circle_geometry = apply_transform_chain(circle_geometry, current_transforms)
+                center_geometry = apply_transform_chain(center_geometry, current_transforms)
+
+                distances = [
+                    center_geometry.distance(Point(x, y))
+                    for x, y in list(circle_geometry.exterior.coords)[:-1]
+                ]
+                radius = sum(distances) / len(distances) if distances else 0.0
+                radial_tolerance = max(circle_tolerance, radius * relative_circle_tolerance)
+                diameter = radius * 2.0
+
+                candidate_info.update({
+                    'center': (center_geometry.x, center_geometry.y),
+                    'diameter': diameter,
+                    'radius_spread': max(distances) - min(distances) if distances else 0.0
+                })
+
+                if not distances or candidate_info['radius_spread'] > radial_tolerance:
+                    candidate_info['reason'] = 'not_circular_after_transform'
+                    rejected.append(candidate_info)
+                elif diameter < min_diameter - 1e-6 or diameter > max_diameter + 1e-6:
+                    candidate_info['reason'] = 'diameter_out_of_range'
+                    rejected.append(candidate_info)
+                else:
+                    candidate_info['stroke_width'] = svggetstroke_width(
+                        node, factor=factor, effective_style=effective_style
+                    )
+                    drill_candidates.append(candidate_info)
+
+        elif kind == 'ellipse':
+            rejected.append({
+                'element': node,
+                'reason': 'element_not_circle'
+            })
+
+        for child in node:
+            visit(
+                child, inherited_style=effective_style, transform_chain=current_transforms,
+                ancestor_hidden=False
+            )
+
+    visit(svg_root)
+
+    tools = {}
+    for drill in drill_candidates:
+        drill_point = Point(drill['center'])
+        drill_diameter = drill['diameter']
+        tool_id = None
+
+        for tid, tool in tools.items():
+            if abs(tool['tooldia'] - drill_diameter) <= diameter_tolerance:
+                tool_id = tid
+                break
+
+        if tool_id is None:
+            tool_id = max(tools.keys()) + 1 if tools else 1
+            tools[tool_id] = {
+                'tooldia': drill_diameter,
+                'drills': [],
+                'slots': [],
+                'solid_geometry': []
+            }
+
+        tools[tool_id]['drills'].append(drill_point)
+        tools[tool_id]['solid_geometry'].append(drill_point.buffer(tools[tool_id]['tooldia'] / 2.0))
+
+    result['tools'] = tools
+    return result
+
+
+def svg_detect_overlapping_compound_paths(svg_filename):
+    """Return named SVG layers whose filled compound paths need advanced winding support."""
+
+    svg_tree = ET.parse(svg_filename)
+    svg_root = svg_tree.getroot()
+    factor = svg_physical_scale(svg_root)['factor']
+    detected_layers = []
+    detected_keys = set()
+
+    def layer_name(node, inherited_name):
+        if re.search('(?:\{.*\})?(.*)$', node.tag).group(1) != 'g':
+            return inherited_name
+
+        for attribute in [
+            'id', 'name', 'data-name', 'label',
+            '{http://www.inkscape.org/namespaces/inkscape}label'
+        ]:
+            value = node.get(attribute)
+            if value and value.strip():
+                return value.strip()
+        return inherited_name
+
+    def closed_subpath_polygon(subpath):
+        explicitly_closed = any(isinstance(component, svg.path.Close) for component in subpath)
+        if explicitly_closed is False and svgpath_is_closed_by_coords(subpath) is False:
+            return None
+
+        subpath_geometries = path2shapely(
+            subpath, object_type='geometry', factor=factor
+        ) or []
+        if not subpath_geometries:
+            return None
+
+        geometry = subpath_geometries[0]
+        if isinstance(geometry, Polygon):
+            return geometry
+        if isinstance(geometry, LineString):
+            coordinates = list(geometry.coords)
+            if len(coordinates) < 3:
+                return None
+            if coordinates[0] != coordinates[-1]:
+                coordinates.append(coordinates[0])
+            polygon = Polygon(coordinates)
+            return polygon if polygon.is_empty is False else None
+        return None
+
+    def visit(node, inherited_style=None, inherited_layer=None, ancestor_hidden=False):
+        if not isinstance(node.tag, str):
+            return
+
+        kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
+        if kind in ['metadata', 'defs', 'style', 'symbol']:
+            return
+
+        effective_style = svgget_effective_style(node, inherited_style=inherited_style)
+        if svg_node_is_visible(effective_style, ancestor_hidden=ancestor_hidden) is False:
+            return
+
+        current_layer = layer_name(node, inherited_layer)
+        if kind == 'path' and svgfill_is_dark_visible(effective_style):
+            try:
+                parsed_path = parse_path(node.get('d') or '')
+                subpaths = svgpath_split_subpaths(parsed_path)
+                closed_polygons = [closed_subpath_polygon(subpath) for subpath in subpaths]
+                closed_polygons = [polygon for polygon in closed_polygons if polygon is not None]
+
+                if len(closed_polygons) > 1:
+                    combined_geometries = path2shapely(
+                        parsed_path, object_type='geometry', factor=factor
+                    ) or []
+                    invalid_combination = any(
+                        geometry is not None and geometry.is_empty is False and geometry.is_valid is False
+                        for geometry in combined_geometries
+                    )
+
+                    exterior = closed_polygons[0]
+                    partial_overlap = any(
+                        exterior.intersects(candidate) and
+                        exterior.intersection(candidate).area > 1e-9 and
+                        candidate.difference(exterior).area > 1e-9
+                        for candidate in closed_polygons[1:]
+                    )
+
+                    if invalid_combination or partial_overlap:
+                        warning_layer = current_layer or 'Unknown Layer'
+                        warning_key = warning_layer
+                        if warning_key not in detected_keys:
+                            detected_keys.add(warning_key)
+                            detected_layers.append(warning_layer)
+            except Exception as e:
+                log.debug("SVG overlapping Compound Path inspection skipped --> %s" % str(e))
+
+        for child in node:
+            visit(
+                child, inherited_style=effective_style, inherited_layer=current_layer,
+                ancestor_hidden=False
+            )
+
+    visit(svg_root)
+    return detected_layers
+
+
 def svgpolyline2shapely(polyline, factor=1.0):
     """
 
@@ -1080,6 +1411,157 @@ def svgpolyline2shapely(polyline, factor=1.0):
     points = parse_svg_point_list(ptliststr, factor)
 
     return LineString(points)
+
+
+def svgfill_is_dark_visible(effective_style):
+    """Return True for a visible dark fill that is useful as CAM geometry."""
+
+    style = effective_style or {}
+    fill = style.get('fill', '#000000').strip().lower()
+
+    if fill in ['none', 'transparent'] or svgis_white_color(fill):
+        return False
+
+    for opacity_name in ['opacity', 'fill-opacity']:
+        opacity = style.get(opacity_name)
+        if opacity is None:
+            continue
+        try:
+            opacity_value = float(opacity.strip().rstrip('%'))
+            if opacity.strip().endswith('%'):
+                opacity_value /= 100.0
+            if opacity_value <= 0:
+                return False
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    # Keep this MVP conservative: only verified dark RGB/hex fills become CAM solids.
+    is_dark_fill = fill == 'black'
+    if fill.startswith('#'):
+        hex_color = fill[1:]
+        if len(hex_color) == 3:
+            hex_color = ''.join(channel * 2 for channel in hex_color)
+        if len(hex_color) == 6:
+            try:
+                red, green, blue = [int(hex_color[idx:idx + 2], 16) for idx in (0, 2, 4)]
+                is_dark_fill = (0.2126 * red + 0.7152 * green + 0.0722 * blue) < 128
+            except ValueError:
+                is_dark_fill = False
+    elif fill.startswith('rgb(') and fill.endswith(')'):
+        try:
+            channels = [int(channel.strip()) for channel in fill[4:-1].split(',')]
+            if len(channels) == 3:
+                is_dark_fill = (0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]) < 128
+        except ValueError:
+            is_dark_fill = False
+
+    return is_dark_fill
+
+
+def svgbasicshape_fill_stroke(shape, node, factor=1.0, effective_style=None):
+    """Materialize the visible CAM fill and stroke of a basic closed SVG shape."""
+
+    style = effective_style if effective_style is not None else svgget_effective_style(node)
+    fill_geometry = shape if svgfill_is_dark_visible(style) else None
+    stroke_width = svggetstroke_width(node, factor=factor, effective_style=style)
+
+    stroke_geometry = None
+    if stroke_width is not None:
+        try:
+            stroke_geometry = shape.boundary.buffer(stroke_width / 2.0)
+            if stroke_geometry.is_empty or stroke_geometry.is_valid is False:
+                stroke_geometry = None
+        except Exception as e:
+            log.debug("SVG basic shape stroke skipped --> %s" % str(e))
+
+    if fill_geometry is not None and stroke_geometry is not None:
+        try:
+            fill_and_stroke = unary_union([fill_geometry, stroke_geometry])
+            if fill_and_stroke.is_empty is False and fill_and_stroke.is_valid:
+                return [fill_and_stroke]
+        except Exception as e:
+            log.debug("SVG basic shape fill/stroke union skipped --> %s" % str(e))
+        return [fill_geometry]
+
+    if fill_geometry is not None:
+        return [fill_geometry]
+    if stroke_geometry is not None:
+        return [stroke_geometry]
+    return []
+
+
+def svgpolyline_fill2shapely(polyline, factor=1.0, effective_style=None):
+    """Create a safe virtual fill for an open SVG polyline."""
+
+    style = effective_style if effective_style is not None else svgget_effective_style(polyline)
+    if svgfill_is_dark_visible(style) is False:
+        return None
+
+    points = parse_svg_point_list(polyline.get('points'), factor)
+    if len(points) < 3 or points[0] == points[-1]:
+        return None
+
+    virtual_ring = LineString(points + [points[0]])
+    if virtual_ring.is_ring is False or virtual_ring.is_simple is False:
+        log.warning("Open SVG polyline fill skipped: virtual closure is self-intersecting or ambiguous.")
+        return None
+
+    fill_geometry = Polygon(points)
+    if fill_geometry.is_empty or fill_geometry.is_valid is False or fill_geometry.area <= 0:
+        log.warning("Open SVG polyline fill skipped: virtual Polygon is invalid or empty.")
+        return None
+
+    return fill_geometry
+
+
+def svgpath_split_subpaths(path):
+    """Split an svg.path.Path into independent subpaths."""
+
+    subpaths = []
+    components = []
+
+    for component in path:
+        if isinstance(component, svg.path.Move) and components:
+            subpaths.append(svg.path.Path(*components))
+            components = []
+        components.append(component)
+
+    if components:
+        subpaths.append(svg.path.Path(*components))
+
+    return subpaths
+
+
+def svgclosedpath_stroke2solid(path, node, object_type, units='MM', factor=1.0, effective_style=None):
+    """Buffer closed path subpaths while leaving open path behavior untouched."""
+
+    stroke_width = svggetstroke_width(node, factor=factor, effective_style=effective_style)
+    solid_strokes = []
+    closed_subpaths = 0
+
+    for subpath in svgpath_split_subpaths(path):
+        subpath_geo = path2shapely(subpath, object_type, units=units, factor=factor) or []
+        explicitly_closed = any(isinstance(component, svg.path.Close) for component in subpath)
+        for geometry in subpath_geo:
+            if isinstance(geometry, Polygon):
+                outline = LineString(geometry.exterior.coords)
+            elif explicitly_closed and isinstance(geometry, LineString):
+                outline_coords = list(geometry.coords)
+                if outline_coords and outline_coords[0] != outline_coords[-1]:
+                    outline_coords.append(outline_coords[0])
+                outline = LineString(outline_coords)
+            else:
+                continue
+
+            closed_subpaths += 1
+            if stroke_width is None:
+                continue
+
+            solid_stroke = outline.buffer(stroke_width / 2.0)
+            if solid_stroke.is_empty is False and solid_stroke.is_valid:
+                solid_strokes.append(solid_stroke)
+
+    return solid_strokes, closed_subpaths
 
 
 def svgpolygon2shapely(polygon, n_points=64, factor=1.0):
@@ -1102,7 +1584,54 @@ def svgpolygon2shapely(polygon, n_points=64, factor=1.0):
     # return LinearRing(points)
 
 
-def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inherited_style=None):
+def svg_apply_transform(geometry, transform_list, factor=1.0):
+    """Apply parsed SVG transforms to geometry already scaled by factor."""
+
+    transformed = geometry
+
+    # Preserve SVG transform-list composition by applying items in reverse order.
+    for transform_item in transform_list[::-1]:
+        transform_kind = transform_item[0]
+
+        if transform_kind == 'translate':
+            transformed = [
+                translate(item, transform_item[1] * factor, transform_item[2] * factor)
+                for item in transformed
+            ]
+        elif transform_kind == 'scale':
+            transformed = [
+                scale(item, transform_item[1], transform_item[2], origin=(0, 0))
+                for item in transformed
+            ]
+        elif transform_kind == 'rotate':
+            transformed = [
+                rotate(
+                    item,
+                    transform_item[1],
+                    origin=(transform_item[2] * factor, transform_item[3] * factor)
+                )
+                for item in transformed
+            ]
+        elif transform_kind == 'skew':
+            transformed = [
+                skew(item, transform_item[1], transform_item[2], origin=(0, 0))
+                for item in transformed
+            ]
+        elif transform_kind == 'matrix':
+            svg_a, svg_b, svg_c, svg_d, svg_e, svg_f = transform_item[1:]
+            shapely_matrix = [
+                svg_a, svg_c, svg_b, svg_d,
+                svg_e * factor, svg_f * factor
+            ]
+            transformed = [affine_transform(item, shapely_matrix) for item in transformed]
+        else:
+            raise Exception('Unknown transformation: %s' % str(transform_item))
+
+    return transformed
+
+
+def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inherited_style=None,
+              ancestor_hidden=False, allow_definitions=False):
     """
     Extracts and flattens all geometry from an SVG node
     into a list of Shapely geometry.
@@ -1116,6 +1645,10 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
     :type factor:       float
     :param inherited_style: inherited SVG style values
     :type inherited_style:  dict|None
+    :param ancestor_hidden: True when an enclosing CAM subtree is hidden
+    :type ancestor_hidden:  bool
+    :param allow_definitions: True only for an explicit reference such as use
+    :type allow_definitions: bool
     :return:            List of Shapely geometry
     :rtype:             list
     """
@@ -1128,8 +1661,13 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
     if kind in ['metadata', 'style', 'title', 'desc']:
         return None
+    if kind in ['defs', 'symbol'] and allow_definitions is False:
+        return None
 
     effective_style = svgget_effective_style(node, inherited_style=inherited_style)
+    if svg_node_is_visible(effective_style, ancestor_hidden=ancestor_hidden) is False:
+        return []
+
     geo = []
 
     # Recurse
@@ -1137,7 +1675,8 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
         for child in node:
             subgeo = getsvggeo(
                 child, object_type, root=root, units=units, res=res, factor=factor,
-                inherited_style=effective_style
+                inherited_style=effective_style, ancestor_hidden=False,
+                allow_definitions=allow_definitions
             )
             if subgeo is not None:
                 geo += subgeo
@@ -1145,24 +1684,52 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
     elif kind == 'path':
         log.debug("***PATH***")
         P = parse_path(node.get('d'))
-        P = path2shapely(P, object_type, units=units, factor=factor)
-        # for path, the resulting geometry is already a list so no need to create a new one
-        geo = P
+        path_geo = path2shapely(P, object_type, units=units, factor=factor) or []
+
+        if svgfill_is_dark_visible(effective_style):
+            # Preserve the established fill and safely add visible closed-path strokes.
+            geo = path_geo
+            stroke_geo, closed_subpaths = svgclosedpath_stroke2solid(
+                P, node, object_type, units=units, factor=factor, effective_style=effective_style
+            )
+            if stroke_geo:
+                try:
+                    fill_and_stroke = unary_union(path_geo + stroke_geo)
+                    if fill_and_stroke.is_empty is False and fill_and_stroke.is_valid and \
+                            fill_and_stroke.geom_type in ['Polygon', 'MultiPolygon']:
+                        geo = [fill_and_stroke]
+                    else:
+                        log.warning("SVG path fill/stroke union skipped: result is invalid or empty.")
+                except Exception as e:
+                    log.debug("SVG path fill/stroke union skipped --> %s" % str(e))
+        else:
+            stroke_geo, closed_subpaths = svgclosedpath_stroke2solid(
+                P, node, object_type, units=units, factor=factor, effective_style=effective_style
+            )
+            # Closed paths without a CAM fill produce only their visible stroke.
+            # Open paths remain unchanged in this MVP.
+            geo = stroke_geo if closed_subpaths else path_geo
 
     elif kind == 'rect':
         ## log.debug("***RECT***")
         R = svgrect2shapely(node, n_points=res, factor=factor)
-        geo = [R]
+        geo = svgbasicshape_fill_stroke(
+            R, node, factor=factor, effective_style=effective_style
+        )
 
     elif kind == 'circle':
         log.debug("***CIRCLE***")
         C = svgcircle2shapely(node, n_points=res, factor=factor)
-        geo = [C]
+        geo = svgbasicshape_fill_stroke(
+            C, node, factor=factor, effective_style=effective_style
+        )
 
     elif kind == 'ellipse':
         log.debug("***ELLIPSE***")
         E = svgellipse2shapely(node, n_points=res, factor=factor)
-        geo = [E]
+        geo = svgbasicshape_fill_stroke(
+            E, node, factor=factor, effective_style=effective_style
+        )
 
     elif kind == 'polygon':
         log.debug("***POLYGON***")
@@ -1180,6 +1747,9 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
         pline = svgpolyline2shapely(node, factor=factor)
         pline = svgstroke2solid(pline, node, factor=factor, effective_style=effective_style)
         geo = [pline]
+        fill_geo = svgpolyline_fill2shapely(node, factor=factor, effective_style=effective_style)
+        if fill_geo is not None:
+            geo.append(fill_geo)
 
     elif kind == 'use':
         log.debug('***USE***')
@@ -1190,7 +1760,7 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
         if ref is not None:
             geo = getsvggeo(
                 ref, object_type, root=root, units=units, res=res, factor=factor,
-                inherited_style=effective_style
+                inherited_style=effective_style, ancestor_hidden=False, allow_definitions=True
             )
 
     else:
@@ -1203,30 +1773,12 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
         if 'transform' in node.attrib:
             trstr = node.get('transform')
             trlist = parse_svg_transform(trstr)
-            # log.debug(trlist)
-
-            # Transformations are applied in reverse order
-            for tr in trlist[::-1]:
-                if tr[0] == 'translate':
-                    geo = [translate(geoi, tr[1], tr[2]) for geoi in geo]
-                elif tr[0] == 'scale':
-                    geo = [scale(geoi, tr[1], tr[2], origin=(0, 0))
-                           for geoi in geo]
-                elif tr[0] == 'rotate':
-                    geo = [rotate(geoi, tr[1], origin=(tr[2], tr[3]))
-                           for geoi in geo]
-                elif tr[0] == 'skew':
-                    geo = [skew(geoi, tr[1], tr[2], origin=(0, 0))
-                           for geoi in geo]
-                elif tr[0] == 'matrix':
-                    geo = [affine_transform(geoi, tr[1:]) for geoi in geo]
-                else:
-                    raise Exception('Unknown transformation: %s', tr)
+            geo = svg_apply_transform(geo, trlist, factor=factor)
 
     return geo
 
 
-def getsvgtext(node, object_type, units='MM'):
+def getsvgtext(node, object_type, units='MM', inherited_style=None, ancestor_hidden=False):
     """
     Extracts and flattens all geometry from an SVG node
     into a list of Shapely geometry.
@@ -1234,6 +1786,10 @@ def getsvgtext(node, object_type, units='MM'):
     :param node:        xml.etree.ElementTree.Element
     :param object_type:
     :param units:       FlatCAM units
+    :param inherited_style: inherited SVG style values
+    :type inherited_style: dict|None
+    :param ancestor_hidden: True when an enclosing CAM subtree is hidden
+    :type ancestor_hidden: bool
     :return:            List of Shapely geometry
     :rtype:             list
     """
@@ -1241,15 +1797,22 @@ def getsvgtext(node, object_type, units='MM'):
         return None
 
     kind = re.search('(?:\{.*\})?(.*)$', node.tag).group(1)
-    if kind in ['metadata', 'style', 'title', 'desc']:
+    if kind in ['metadata', 'style', 'title', 'desc', 'defs', 'symbol']:
         return None
+
+    effective_style = svgget_effective_style(node, inherited_style=inherited_style)
+    if svg_node_is_visible(effective_style, ancestor_hidden=ancestor_hidden) is False:
+        return []
 
     geo = []
 
     # Recurse
     if len(node) > 0:
         for child in node:
-            subgeo = getsvgtext(child, object_type, units=units)
+            subgeo = getsvgtext(
+                child, object_type, units=units, inherited_style=effective_style,
+                ancestor_hidden=False
+            )
             if subgeo is not None:
                 geo += subgeo
 
@@ -1308,25 +1871,8 @@ def getsvgtext(node, object_type, units='MM'):
         if 'transform' in node.attrib:
             trstr = node.get('transform')
             trlist = parse_svg_transform(trstr)
-            # log.debug(trlist)
-
-            # Transformations are applied in reverse order
-            for tr in trlist[::-1]:
-                if tr[0] == 'translate':
-                    geo = [translate(geoi, tr[1], tr[2]) for geoi in geo]
-                elif tr[0] == 'scale':
-                    geo = [scale(geoi, tr[1], tr[2], origin=(0, 0))
-                           for geoi in geo]
-                elif tr[0] == 'rotate':
-                    geo = [rotate(geoi, tr[1], origin=(tr[2], tr[3]))
-                           for geoi in geo]
-                elif tr[0] == 'skew':
-                    geo = [skew(geoi, tr[1], tr[2], origin=(0, 0))
-                           for geoi in geo]
-                elif tr[0] == 'matrix':
-                    geo = [affine_transform(geoi, tr[1:]) for geoi in geo]
-                else:
-                    raise Exception('Unknown transformation: %s', tr)
+            # Text geometry is not globally scaled by this legacy function.
+            geo = svg_apply_transform(geo, trlist, factor=1.0)
 
     return geo
 

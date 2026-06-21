@@ -260,3 +260,78 @@ Limitations:
 * Low coordinate precision, such as 1 decimal, may introduce small geometry or drill diameter deviations.
 * Users must verify dimensions, geometry, Excellon drills and CNC paths before manufacturing.
 * Manual Illustrator-created drill conventions still require future validation.
+
+## 21/06/2026
+
+### Adobe Illustrator SVG Tiny 1.2 Compatibility Suite
+
+FlatCAM 9 Neo S2 expands its experimental CAM-oriented workflow with broader support for SVG Tiny 1.2 files exported from Adobe Illustrator.
+
+This update supports both of these workflows:
+
+Adobe Illustrator drawing created from scratch
+-> SVG Tiny 1.2
+-> FlatCAM 9 Neo S2 Geometry
+-> Excellon drills
+-> CNC Job
+
+Proteus SVG
+-> Adobe Illustrator editing and customization
+-> SVG Tiny 1.2
+-> FlatCAM 9 Neo S2 Geometry
+-> Excellon drills
+-> CNC Job
+
+This compatibility applies to Illustrator-exported SVG files, not native `.AI` documents.
+
+Main improvements:
+
+* Broader support for common Illustrator tools:
+  * Lines and stroked paths
+  * Rectangles and rounded rectangles
+  * Circles and ellipses
+  * Polygons and Pen Tool paths
+  * Compound Paths with contained holes
+  * Pathfinder Unite and Minus Front
+  * Flattened clipping masks
+  * Expanded symbols
+* Multi-layer Illustrator SVG support.
+* Hidden layers, hidden groups and hidden objects are ignored.
+* Visible overlapping objects from separate layers are consolidated into CAM geometry.
+* SVG matrix, translate, rotate, scale and skew transformations are handled more reliably.
+* Physical SVG scale can be recovered from Illustrator XMP `MaxPageSize` metadata.
+* Manual Illustrator drill detection is supported experimentally.
+* Valid white circular drill markers create an Excellon object automatically.
+* Proteus SVG and Proteus SVG reexported or customized through Illustrator remain supported.
+
+Manual drill convention in Illustrator:
+
+* Draw a true circle, not an ellipse.
+* Use white fill.
+* Use a visible dark or black stroke.
+* Set the geometric circle diameter to the desired drill diameter.
+* Supported drill diameter range: 0.2 mm to 6.0 mm.
+* Stroke width is only a visual/detection aid and is not added to the drill diameter.
+
+Recommended Illustrator export profile:
+
+* SVG Tiny 1.2.
+* Presentation Attributes.
+* Include XMP Metadata.
+* Working units: millimeters.
+* Coordinate decimals: minimum 3, recommended 4.
+* Do not preserve Illustrator Editing Capabilities.
+
+Known limitation:
+
+Complex Compound Paths made by partially overlapping shapes may not match Illustrator's visual fill-rule behavior. FlatCAM 9 Neo S2 warns the user in the Shell and reports the problematic layer when detected.
+
+For PCB/CAM workflows, use Illustrator Pathfinder operations such as Unite, Minus Front, Exclude or Intersect instead of overlapping Compound Paths. Expanding or flattening the geometry before SVG export is also recommended.
+
+Compound Paths with normal contained holes remain supported.
+
+Important:
+
+* SVG import remains experimental.
+* Native Gerber + Excellon is still the preferred manufacturing workflow.
+* Always verify dimensions, geometry, drill diameters, drill positions and CNC paths before manufacturing.

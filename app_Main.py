@@ -80,8 +80,9 @@ from appObjects.AppObject import AppObject
 
 # FlatCAM Parsing files
 from appParsers.ParseExcellon import Excellon
-from appParsers.ParseGerber import Gerber
-from appParsers.ParseSVG import extract_proteus_svg_drills, svg_physical_scale, svg_source_advisor
+from appParsers.ParseGerber import Gerber, gerber_read_x2_metadata
+from appParsers.ParseSVG import extract_proteus_svg_drills, extract_illustrator_svg_drills, \
+    svg_detect_overlapping_compound_paths, svg_physical_scale, svg_source_advisor
 from camlib import to_dict, dict2obj, ET, ParseError, Geometry, CNCjob
 
 # FlatCAM appGUI
@@ -10118,6 +10119,19 @@ class MenuFileHandlers(QtCore.QObject):
             self.inform[str, bool].emit(advisor_message, False)
             self.app.inform_shell[str].emit(advisor_message)
 
+        try:
+            compound_path_layers = svg_detect_overlapping_compound_paths(filename)
+            for layer_name in compound_path_layers:
+                compound_warning = (
+                    'Layer "%s" contains an overlapping Compound Path. '
+                    'This Illustrator construction is not fully supported by FlatCAM 9 Neo S2. '
+                    'Use Pathfinder operations instead of Compound Path for overlapping shapes. '
+                    'Imported geometry may differ from the visual appearance in Illustrator.'
+                ) % layer_name
+                self.inform.emit('[WARNING_NOTCL] %s' % compound_warning)
+        except Exception as e:
+            log.debug("App.import_svg() Compound Path inspection skipped --> %s" % str(e))
+
         def obj_init(geo_obj, app_obj):
             geo_obj.import_svg(filename, obj_type, units=units)
             geo_obj.multigeo = True
@@ -10149,37 +10163,47 @@ class MenuFileHandlers(QtCore.QObject):
                     len(tool.get('drills', []))
                     for tool in drill_result.get('tools', {}).values()
                 )
+                if drill_count == 0 and advisor.get('source') == 'illustrator':
+                    drill_result = extract_illustrator_svg_drills(filename)
+                    drill_count = sum(
+                        len(tool.get('drills', []))
+                        for tool in drill_result.get('tools', {}).values()
+                    )
                 if drill_count > 0:
                     drill_name = name.rpartition('.')[0] + "_drills"
-                    self.import_proteus_svg_drills(filename, outname=drill_name, plot=plot)
+                    self.import_svg_drills(
+                        filename, drill_result=drill_result, outname=drill_name, plot=plot
+                    )
             except Exception as e:
-                log.debug("App.import_svg() Proteus drill extraction skipped --> %s" % str(e))
+                log.debug("App.import_svg() SVG drill extraction skipped --> %s" % str(e))
 
-    def import_proteus_svg_drills(self, filename, outname=None, plot=True, flip=True):
+    def import_svg_drills(self, filename, drill_result=None, outname=None, plot=True, flip=True):
         """
-        Proteus SVG Drill Extraction MVP.
+        Experimental SVG Drill Extraction.
 
-        Creates an Excellon object from white circular hole paths that are
-        concentric with larger circular pad paths in a Proteus SVG.
+        Creates an Excellon object from already validated SVG drill markers.
 
         :param filename:    Path to the SVG file.
         :type filename:     str
+        :param drill_result: Prevalidated SVG drill extraction result
+        :type drill_result: dict|None
         :param outname:     The name given to the resulting Excellon object
         :param plot:        If True then the resulting object will be plotted on canvas
         :param flip:        If True then the drill coordinates are flipped vertically like SVG geometry import
         :return:            The created object or 'fail'
         """
 
-        self.app.log.debug("App.import_proteus_svg_drills()")
+        self.app.log.debug("App.import_svg_drills()")
 
-        try:
-            result = extract_proteus_svg_drills(filename)
-        except Exception as e:
-            log.debug("App.import_proteus_svg_drills() --> %s" % str(e))
-            self.inform.emit('[ERROR_NOTCL] %s' % _("Could not extract drills from SVG."))
-            return 'fail'
+        if drill_result is None:
+            try:
+                drill_result = extract_proteus_svg_drills(filename)
+            except Exception as e:
+                log.debug("App.import_svg_drills() --> %s" % str(e))
+                self.inform.emit('[ERROR_NOTCL] %s' % _("Could not extract drills from SVG."))
+                return 'fail'
 
-        tools = result.get('tools', {})
+        tools = drill_result.get('tools', {})
         if flip:
             try:
                 svg_tree = ET.parse(filename)
@@ -10206,13 +10230,13 @@ class MenuFileHandlers(QtCore.QObject):
 
                 tools = flipped_tools
             except Exception as e:
-                log.debug("App.import_proteus_svg_drills() flip --> %s" % str(e))
+                log.debug("App.import_svg_drills() flip --> %s" % str(e))
                 self.inform.emit('[ERROR_NOTCL] %s' % _("Could not align drills with SVG geometry."))
                 return 'fail'
 
         drill_count = sum(len(tool.get('drills', [])) for tool in tools.values())
         if not tools or drill_count == 0:
-            self.inform.emit('[WARNING_NOTCL] %s' % _("No Proteus SVG drills were detected."))
+            self.inform.emit('[WARNING_NOTCL] %s' % _("No SVG drills were detected."))
             return 'fail'
 
         name = outname or (filename.split('/')[-1].split('\\')[-1].rpartition('.')[0] + "_drills")
@@ -10339,6 +10363,24 @@ class MenuFileHandlers(QtCore.QObject):
                 app_obj.inform.emit('[ERROR_NOTCL] %s' %
                                     _("Object is not Gerber file or empty. Aborting object creation."))
                 return "fail"
+
+            # X2 attributes are informational only and never affect Gerber geometry or GCode.
+            try:
+                metadata = gerber_read_x2_metadata(gerber_obj.source_file)
+                metadata_details = []
+
+                if metadata['file_function']:
+                    metadata_details.append('FileFunction=%s' % metadata['file_function'])
+                if metadata['creation_date']:
+                    creation_date = metadata['creation_date'].replace('T', ' T ', 1)
+                    metadata_details.append('CreationDate=%s' % creation_date)
+
+                if metadata_details:
+                    metadata_message = 'Gerber X2 metadata detected: %s' % '; '.join(metadata_details)
+                    app_obj.inform[str, bool].emit(metadata_message, False)
+                    app_obj.inform_shell[str].emit(metadata_message)
+            except Exception as e:
+                app_obj.log.debug("Gerber X2 metadata inspection skipped --> %s" % str(e))
 
         self.app.log.debug("open_gerber()")
 

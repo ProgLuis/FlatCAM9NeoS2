@@ -38,6 +38,34 @@ if '_' not in builtins.__dict__:
 log = logging.getLogger('base')
 
 
+_x2_file_attribute_re = re.compile(
+    r'%TF\.([A-Za-z][A-Za-z0-9]*)(?:,([^*%]*))?\*%',
+    re.IGNORECASE
+)
+
+
+def gerber_read_x2_metadata(gerber_source):
+    """Extract selected informational Gerber X2 file attributes."""
+
+    source = gerber_source or ''
+    metadata = {
+        'is_x2': bool(re.search(r'%T[FAOD]\.', source, re.IGNORECASE)),
+        'file_function': None,
+        'creation_date': None
+    }
+
+    for match in _x2_file_attribute_re.finditer(source):
+        attribute = match.group(1).lower()
+        value = (match.group(2) or '').strip()
+
+        if attribute == 'filefunction':
+            metadata['file_function'] = value
+        elif attribute == 'creationdate':
+            metadata['creation_date'] = value
+
+    return metadata
+
+
 class Gerber(Geometry):
     """
     Here it is done all the Gerber parsing.
