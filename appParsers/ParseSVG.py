@@ -44,7 +44,7 @@ from svg.path import Line, Arc, CubicBezier, QuadraticBezier, parse_path
 import svg.path
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.affinity import skew, affine_transform, rotate
-from shapely.ops import unary_union
+from shapely.ops import polygonize, unary_union
 import numpy as np
 
 from appParsers.ParseFont import *
@@ -780,6 +780,10 @@ def svgget_effective_style(node, inherited_style=None):
     fill_opacity = node.get('fill-opacity')
     if fill_opacity is not None:
         effective_style['fill-opacity'] = fill_opacity
+
+    fill_rule = node.get('fill-rule')
+    if fill_rule is not None:
+        effective_style['fill-rule'] = fill_rule
 
     opacity = node.get('opacity')
     if opacity is not None:
@@ -1532,6 +1536,116 @@ def svgpath_split_subpaths(path):
     return subpaths
 
 
+def svgcompound_fillrule2shapely(path, node, object_type, units='MM', factor=1.0, effective_style=None):
+    """Resolve partially overlapping closed subpaths using SVG fill-rule semantics for Geometry imports."""
+
+    if object_type != 'geometry':
+        return None
+
+    subpaths = svgpath_split_subpaths(path)
+    if len(subpaths) < 2:
+        return None
+
+    rings = []
+    polygons = []
+    windings = []
+
+    for subpath in subpaths:
+        explicitly_closed = any(isinstance(component, svg.path.Close) for component in subpath)
+        if explicitly_closed is False and svgpath_is_closed_by_coords(subpath) is False:
+            return None
+
+        subpath_geo = path2shapely(subpath, object_type, units=units, factor=factor) or []
+        if len(subpath_geo) != 1 or isinstance(subpath_geo[0], (Polygon, LineString)) is False:
+            return None
+
+        geometry = subpath_geo[0]
+        coords = list(geometry.exterior.coords) if isinstance(geometry, Polygon) else list(geometry.coords)
+        if len(coords) < 3:
+            return None
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+
+        signed_area = sum(
+            coords[index][0] * coords[index + 1][1] - coords[index + 1][0] * coords[index][1]
+            for index in range(len(coords) - 1)
+        ) / 2.0
+        if abs(signed_area) <= 1e-12:
+            return None
+
+        ring_polygon = Polygon(coords)
+        if ring_polygon.is_empty or ring_polygon.is_valid is False or ring_polygon.area <= 0:
+            return None
+
+        rings.append(LineString(coords))
+        polygons.append(ring_polygon)
+        windings.append(1 if signed_area > 0 else -1)
+
+    area_tolerance = max(1e-12, max(polygon.area for polygon in polygons) * 1e-9)
+    partial_overlap = False
+    for first_index, first_polygon in enumerate(polygons):
+        for second_polygon in polygons[first_index + 1:]:
+            try:
+                intersection_area = first_polygon.intersection(second_polygon).area
+            except Exception:
+                return None
+            if intersection_area > area_tolerance and not first_polygon.covers(second_polygon) and \
+                    not second_polygon.covers(first_polygon):
+                partial_overlap = True
+                break
+        if partial_overlap:
+            break
+
+    if partial_overlap is False:
+        return None
+
+    try:
+        atomic_regions = list(polygonize(unary_union(rings)))
+        if not atomic_regions:
+            log.warning("Advanced SVG Compound Path fill-rule fallback: polygonize returned no regions.")
+            return None
+
+        style = effective_style if effective_style is not None else svgget_effective_style(node)
+        fill_rule = str(style.get('fill-rule', 'nonzero')).strip().lower()
+        if fill_rule not in ['evenodd', 'nonzero']:
+            fill_rule = 'nonzero'
+
+        filled_regions = []
+        for region in atomic_regions:
+            sample = region.representative_point()
+            containing = [index for index, polygon in enumerate(polygons) if polygon.covers(sample)]
+
+            if fill_rule == 'evenodd':
+                is_filled = len(containing) % 2 == 1
+            else:
+                winding_number = sum(windings[index] for index in containing)
+                is_filled = winding_number != 0
+
+            if is_filled:
+                filled_regions.append(region)
+
+        if not filled_regions:
+            log.warning("Advanced SVG Compound Path fill-rule fallback: no filled regions.")
+            return None
+
+        fill_geometry = unary_union(filled_regions)
+        if fill_geometry.is_valid is False:
+            repaired_geometry = fill_geometry.buffer(0)
+            if repaired_geometry.is_empty or repaired_geometry.is_valid is False:
+                log.warning("Advanced SVG Compound Path fill-rule fallback: invalid result.")
+                return None
+            fill_geometry = repaired_geometry
+
+        if fill_geometry.is_empty or fill_geometry.geom_type not in ['Polygon', 'MultiPolygon']:
+            log.warning("Advanced SVG Compound Path fill-rule fallback: unsupported result.")
+            return None
+
+        return [fill_geometry]
+    except Exception as e:
+        log.warning("Advanced SVG Compound Path fill-rule fallback: %s" % str(e))
+        return None
+
+
 def svgclosedpath_stroke2solid(path, node, object_type, units='MM', factor=1.0, effective_style=None):
     """Buffer closed path subpaths while leaving open path behavior untouched."""
 
@@ -1687,6 +1801,12 @@ def getsvggeo(node, object_type, root=None, units='MM', res=64, factor=1.0, inhe
         path_geo = path2shapely(P, object_type, units=units, factor=factor) or []
 
         if svgfill_is_dark_visible(effective_style):
+            advanced_path_geo = svgcompound_fillrule2shapely(
+                P, node, object_type, units=units, factor=factor, effective_style=effective_style
+            )
+            if advanced_path_geo is not None:
+                path_geo = advanced_path_geo
+
             # Preserve the established fill and safely add visible closed-path strokes.
             geo = path_geo
             stroke_geo, closed_subpaths = svgclosedpath_stroke2solid(

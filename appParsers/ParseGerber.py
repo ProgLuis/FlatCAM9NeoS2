@@ -2153,7 +2153,8 @@ class Gerber(Geometry):
         scale_info = svg_physical_scale(svg_root)
         factor = scale_info['factor']
         h = scale_info['height']
-        geos = getsvggeo(svg_root, 'gerber', units=units, res=res, factor=factor)
+        # Reuse the visual SVG parser mode so advanced fill-rule/winding results survive the Gerber conversion.
+        geos = getsvggeo(svg_root, 'geometry', units=units, res=res, factor=factor)
         if flip:
             geos = [translate(scale(g, 1.0, -1.0, origin=(0, 0)), yoff=h) for g in geos]
 
