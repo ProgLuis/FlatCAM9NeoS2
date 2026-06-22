@@ -15,19 +15,24 @@ from PyQt5 import QtWidgets
 from camlib import Geometry, arc, arc_angle, ApertureMacro, grace
 
 import numpy as np
+import re
 import traceback
 from copy import deepcopy
 
 from shapely.ops import unary_union, linemerge
 import shapely.affinity as affinity
 from shapely.geometry import box as shply_box
-from shapely.geometry import Point
+from shapely.geometry import GeometryCollection, LinearRing, LineString, MultiLineString, MultiPolygon, Point, \
+    Polygon
+
+from svg.path import parse_path
 
 from lxml import etree as ET
 import ezdxf
 
 from appParsers.ParseDXF import *
-from appParsers.ParseSVG import svgparselength, getsvggeo, svgparse_viewbox
+from appParsers.ParseSVG import getsvggeo, parse_svg_point_list, parse_svg_transform, path2shapely, \
+    svg_physical_scale, svgis_white_color, svgparselength
 
 import gettext
 import builtins
@@ -1855,6 +1860,273 @@ class Gerber(Geometry):
         self.scale(factor, factor)
         return factor
 
+    @staticmethod
+    def _svg_gerber_normalize_geometry(geometry, res):
+        """Normalize SVG output into geometry types safe for the Gerber object model."""
+
+        normalized = []
+        stats = {
+            'discarded_empty': 0,
+            'discarded_unsupported': 0,
+            'repaired': 0,
+            'repair_rejected': 0
+        }
+
+        def visit(item, allow_repair=True):
+            if item is None:
+                stats['discarded_empty'] += 1
+                return
+
+            if isinstance(item, (list, tuple)):
+                for child in item:
+                    visit(child, allow_repair=allow_repair)
+                return
+
+            if item.is_empty:
+                stats['discarded_empty'] += 1
+                return
+
+            if isinstance(item, Polygon):
+                if item.is_valid is False and allow_repair:
+                    try:
+                        repaired = item.buffer(0, resolution=res)
+                    except Exception as e:
+                        stats['repair_rejected'] += 1
+                        log.warning("SVG as Gerber Polygon repair failed; original preserved: %s" % str(e))
+                    else:
+                        if repaired is not None and repaired.is_empty is False and repaired.is_valid:
+                            stats['repaired'] += 1
+                            visit(repaired, allow_repair=False)
+                            return
+                        stats['repair_rejected'] += 1
+                        log.warning("SVG as Gerber Polygon repair rejected; original preserved.")
+
+                normalized.append(item)
+                return
+
+            if isinstance(item, MultiPolygon):
+                if item.is_valid is False and allow_repair:
+                    try:
+                        repaired = item.buffer(0, resolution=res)
+                    except Exception as e:
+                        stats['repair_rejected'] += 1
+                        log.warning("SVG as Gerber MultiPolygon repair failed; original preserved: %s" % str(e))
+                    else:
+                        if repaired is not None and repaired.is_empty is False and repaired.is_valid:
+                            stats['repaired'] += 1
+                            visit(repaired, allow_repair=False)
+                            return
+                        stats['repair_rejected'] += 1
+                        log.warning("SVG as Gerber MultiPolygon repair rejected; original preserved.")
+
+                for child in item.geoms:
+                    visit(child, allow_repair=allow_repair)
+                return
+
+            if isinstance(item, (GeometryCollection, MultiLineString)):
+                for child in item.geoms:
+                    visit(child, allow_repair=allow_repair)
+                return
+
+            if isinstance(item, LinearRing):
+                normalized.append(LineString(item.coords))
+                return
+
+            if isinstance(item, LineString):
+                normalized.append(item)
+                return
+
+            stats['discarded_unsupported'] += 1
+            log.warning("SVG as Gerber unsupported geometry ignored: %s" % item.geom_type)
+
+        visit(geometry)
+        return normalized, stats
+
+    @staticmethod
+    def _svg_gerber_document_bounds(scale_info, flip):
+        """Return scaled document bounds in the same coordinate system as imported SVG geometry."""
+
+        viewbox = scale_info.get('viewbox')
+        if viewbox is None:
+            return None
+
+        min_x, min_y, width, height = viewbox
+        factor = scale_info['factor']
+        min_x *= factor
+        max_x = (viewbox[0] + width) * factor
+
+        if flip:
+            physical_height = scale_info['height']
+            out_min_y = physical_height - (min_y + height) * factor
+            out_max_y = physical_height - min_y * factor
+        else:
+            out_min_y = min_y * factor
+            out_max_y = (min_y + height) * factor
+
+        return min_x, out_min_y, max_x, out_max_y
+
+    @staticmethod
+    def _svg_gerber_has_white_page_background(svg_root, viewbox):
+        """Detect an untransformed, explicitly white shape that covers the complete SVG viewBox."""
+
+        if viewbox is None:
+            return False
+
+        page_bounds = (viewbox[0], viewbox[1], viewbox[0] + viewbox[2], viewbox[1] + viewbox[3])
+        page_area = abs(viewbox[2] * viewbox[3])
+        tolerance = max(1e-6, max(abs(viewbox[2]), abs(viewbox[3])) * 1e-6)
+        class_fills = {}
+
+        for style_node in svg_root.iter():
+            if not isinstance(style_node.tag, str) or style_node.tag.rpartition('}')[-1] != 'style':
+                continue
+            style_text = ''.join(style_node.itertext())
+            for selectors, declarations in re.findall(r'([^{}]+)\{([^{}]*)\}', style_text):
+                fill_match = re.search(r'(?:^|;)\s*fill\s*:\s*([^;]+)', declarations, flags=re.IGNORECASE)
+                if fill_match is None:
+                    continue
+                for class_name in re.findall(r'\.([A-Za-z_][\w-]*)', selectors):
+                    class_fills[class_name] = fill_match.group(1).strip()
+
+        def style_fill(node, inherited_fill):
+            fill = inherited_fill
+            presentation_fill = node.get('fill')
+            if presentation_fill is not None:
+                fill = presentation_fill
+
+            for class_name in str(node.get('class', '')).split():
+                if class_name in class_fills:
+                    fill = class_fills[class_name]
+
+            inline_style = node.get('style')
+            if inline_style:
+                fill_match = re.search(r'(?:^|;)\s*fill\s*:\s*([^;]+)', inline_style, flags=re.IGNORECASE)
+                if fill_match is not None:
+                    fill = fill_match.group(1).strip()
+            return fill
+
+        def number(value, default=0.0):
+            parsed = svgparselength(value)
+            return parsed[0] if parsed is not None else default
+
+        def covers_page(candidate):
+            if candidate is None or candidate.is_empty or page_area <= 0:
+                return False
+            if any(abs(candidate.bounds[index] - page_bounds[index]) > tolerance for index in range(4)):
+                return False
+            return abs(candidate.area - page_area) <= max(tolerance * max(abs(viewbox[2]), abs(viewbox[3])),
+                                                          page_area * 1e-6)
+
+        def has_effective_transform(node):
+            transform = node.get('transform')
+            if transform is None:
+                return False
+            try:
+                transform_list = parse_svg_transform(transform)
+            except Exception:
+                return True
+
+            for transform_item in transform_list:
+                transform_kind = transform_item[0]
+                values = transform_item[1:]
+                if transform_kind == 'translate' and any(abs(value) > 1e-12 for value in values):
+                    return True
+                if transform_kind == 'scale' and any(abs(value - 1.0) > 1e-12 for value in values):
+                    return True
+                if transform_kind in ['rotate', 'skew'] and any(abs(value) > 1e-12 for value in values):
+                    return True
+                if transform_kind == 'matrix':
+                    identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+                    if any(abs(value - identity[index]) > 1e-12 for index, value in enumerate(values)):
+                        return True
+            return False
+
+        def inspect(node, inherited_fill=None, transformed=False):
+            if not isinstance(node.tag, str):
+                return False
+
+            transformed = transformed or has_effective_transform(node)
+            fill = style_fill(node, inherited_fill)
+            kind = node.tag.rpartition('}')[-1]
+
+            if transformed is False and svgis_white_color(fill):
+                candidates = []
+                try:
+                    if kind == 'rect':
+                        x = number(node.get('x'))
+                        y = number(node.get('y'))
+                        width = number(node.get('width'))
+                        height = number(node.get('height'))
+                        candidates = [shply_box(x, y, x + width, y + height)]
+                    elif kind == 'polygon':
+                        candidates = [Polygon(parse_svg_point_list(node.get('points'), 1.0))]
+                    elif kind == 'path' and node.get('d'):
+                        candidates = path2shapely(parse_path(node.get('d')), 'gerber', factor=1.0) or []
+                except Exception as e:
+                    log.debug("SVG as Gerber background inspection skipped --> %s" % str(e))
+
+                if any(covers_page(candidate) for candidate in candidates):
+                    return True
+
+            for child in node:
+                if inspect(child, inherited_fill=fill, transformed=transformed):
+                    return True
+            return False
+
+        return inspect(svg_root)
+
+    @staticmethod
+    def _svg_gerber_is_document_background(geometry, document_bounds):
+        """Match only a solid Polygon that covers essentially the complete SVG document."""
+
+        if document_bounds is None or isinstance(geometry, Polygon) is False:
+            return False
+
+        document_width = document_bounds[2] - document_bounds[0]
+        document_height = document_bounds[3] - document_bounds[1]
+        document_area = abs(document_width * document_height)
+        if document_area <= 0:
+            return False
+
+        tolerance = max(0.001, max(abs(document_width), abs(document_height)) * 1e-6)
+        if any(abs(geometry.bounds[index] - document_bounds[index]) > tolerance for index in range(4)):
+            return False
+
+        return geometry.area >= document_area * 0.999999
+
+    @staticmethod
+    def _svg_gerber_is_qrcode(svg_root):
+        """Identify the explicit path signature used by FlatCAM's exported QRCode SVG."""
+
+        geometry_kinds = {'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'use'}
+        geometry_nodes = [
+            node for node in svg_root.iter()
+            if isinstance(node.tag, str) and node.tag.rpartition('}')[-1] in geometry_kinds
+        ]
+        if len(geometry_nodes) != 1:
+            return False
+
+        qr_path = geometry_nodes[0]
+        if qr_path.tag.rpartition('}')[-1] != 'path' or qr_path.get('id') != 'qr-path' or not qr_path.get('d'):
+            return False
+
+        fill = str(qr_path.get('fill', '')).strip().lower()
+        stroke = str(qr_path.get('stroke', 'none')).strip().lower()
+        fill_rule = str(qr_path.get('fill-rule', 'nonzero')).strip().lower()
+        if fill in ['none', 'transparent'] or stroke not in ['', 'none'] or fill_rule != 'nonzero':
+            return False
+
+        try:
+            fill_opacity = float(str(qr_path.get('fill-opacity', '1')).strip().rstrip('%'))
+            if str(qr_path.get('fill-opacity', '1')).strip().endswith('%'):
+                fill_opacity /= 100.0
+            if fill_opacity <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+
+        return True
+
     def import_svg(self, filename, object_type='gerber', flip=True, units=None):
         """
         Imports shapes from an SVG file into the object's geometry.
@@ -1874,14 +2146,13 @@ class Gerber(Geometry):
         svg_tree = ET.parse(filename)
         svg_root = svg_tree.getroot()
 
-        # Change origin to bottom left
-        # h = float(svg_root.get('height'))
-        # w = float(svg_root.get('width'))
-        h = svgparselength(svg_root.get('height'))[0]  # TODO: No units support yet
-
         units = self.app.defaults['units'] if units is None else units
         res = self.app.defaults['gerber_circle_steps']
-        factor = svgparse_viewbox(svg_root)
+
+        # Illustrator may omit root height; XMP MaxPageSize supplies the physical SVG scale and height.
+        scale_info = svg_physical_scale(svg_root)
+        factor = scale_info['factor']
+        h = scale_info['height']
         geos = getsvggeo(svg_root, 'gerber', units=units, res=res, factor=factor)
         if flip:
             geos = [translate(scale(g, 1.0, -1.0, origin=(0, 0)), yoff=h) for g in geos]
@@ -1899,22 +2170,41 @@ class Gerber(Geometry):
         #     self.solid_geometry = [self.solid_geometry, geos]
 
         if type(geos) == list:
-            # HACK for importing QRCODE exported by FlatCAM
+            # Compatibility handling only for an explicitly identified FlatCAM QRCode SVG.
             try:
                 geos_length = len(geos)
             except TypeError:
                 geos_length = 1
 
-            if geos_length == 1:
+            if self._svg_gerber_is_qrcode(svg_root) and geos_length == 1 and isinstance(geos[0], Polygon):
                 geo_qrcode = [Polygon(geos[0].exterior)]
                 for i_el in geos[0].interiors:
                     geo_qrcode.append(Polygon(i_el).buffer(0, resolution=res))
                 geos = [poly for poly in geo_qrcode]
 
+        geos, normalization_stats = self._svg_gerber_normalize_geometry(geos, res=res)
+
+        document_bounds = self._svg_gerber_document_bounds(scale_info, flip=flip)
+        has_white_page_background = self._svg_gerber_has_white_page_background(
+            svg_root, scale_info.get('viewbox')
+        )
+        if has_white_page_background:
+            filtered_geos = []
+            for geometry in geos:
+                if self._svg_gerber_is_document_background(geometry, document_bounds):
+                    normalization_stats['discarded_background'] = \
+                        normalization_stats.get('discarded_background', 0) + 1
+                    log.warning("SVG as Gerber discarded an explicitly white full-page background: %s" % filename)
+                    continue
+                filtered_geos.append(geometry)
+            geos = filtered_geos
+
+        if type(geos) == list:
             if type(self.solid_geometry) == list:
                 self.solid_geometry += geos
             else:
-                geos.append(self.solid_geometry)
+                if self.solid_geometry is not None and self.solid_geometry.is_empty is False:
+                    geos.append(self.solid_geometry)
                 self.solid_geometry = geos
         else:
             if type(self.solid_geometry) == list:
@@ -1923,7 +2213,11 @@ class Gerber(Geometry):
                 self.solid_geometry = [self.solid_geometry, geos]
 
         # flatten the self.solid_geometry list for import_svg() to import SVG as Gerber
-        self.solid_geometry = list(self.flatten_list(self.solid_geometry))
+        self.solid_geometry, final_normalization_stats = self._svg_gerber_normalize_geometry(
+            self.solid_geometry, res=res
+        )
+        for stat_name, stat_value in final_normalization_stats.items():
+            normalization_stats[stat_name] = normalization_stats.get(stat_name, 0) + stat_value
 
         try:
             __ = iter(self.solid_geometry)
@@ -1937,8 +2231,16 @@ class Gerber(Geometry):
                 'geometry': []
             }
 
-        for pol in self.solid_geometry:
-            new_el = {'solid': pol, 'follow': pol.exterior}
+        for geometry in self.solid_geometry:
+            if isinstance(geometry, Polygon):
+                follow_geometry = geometry.exterior
+            elif isinstance(geometry, LineString):
+                follow_geometry = geometry
+            else:
+                log.warning("SVG as Gerber geometry omitted from aperture 0: %s" % geometry.geom_type)
+                continue
+
+            new_el = {'solid': geometry, 'follow': follow_geometry}
             self.apertures['0']['geometry'].append(new_el)
 
     def import_dxf_as_gerber(self, filename, units='MM'):
