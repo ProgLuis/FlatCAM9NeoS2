@@ -2244,41 +2244,198 @@ class Gerber(Geometry):
             new_el = {'solid': geometry, 'follow': follow_geometry}
             self.apertures['0']['geometry'].append(new_el)
 
-    def import_dxf_as_gerber(self, filename, units='MM'):
+    def import_dxf_as_gerber(self, filename, units='MM', move_to_first_quadrant=False, dxf_user_units=None):
         """
         Imports shapes from an DXF file into the Gerberobject geometry.
 
-        :param filename:    Path to the DXF file.
-        :type filename:     str
-        :param units:       Application units
+        :param filename:                Path to the DXF file.
+        :type filename:                 str
+        :param units:                   Application units
+        :param move_to_first_quadrant:  Move imported DXF geometry to X/Y >= 0.
+        :param dxf_user_units:          User-selected source units when DXF has no $INSUNITS.
         :return: None
         """
 
         log.debug("Parsing DXF file geometry into a Gerber object geometry.")
         # Parse into list of shapely objects
         dxf = ezdxf.readfile(filename)
-        geos = getdxfgeo(dxf)
-        # trying to optimize the resulting geometry by merging contiguous lines
-        geos = linemerge(geos)
-
-        # Add to object
-        if self.solid_geometry is None:
-            self.solid_geometry = []
-
-        if type(self.solid_geometry) is list:
-            if type(geos) is list:
-                self.solid_geometry += geos
+        scale_info = dxf_physical_scale(dxf, target_units=units)
+        if scale_info['status'] == 'missing' and dxf_user_units:
+            user_units_map = {
+                'MM': (4, 'Millimeters', 1.0),
+                'IN': (1, 'Inches', 25.4),
+                'CM': (5, 'Centimeters', 10.0),
+                'M': (6, 'Meters', 1000.0)
+            }
+            target_to_mm = {'MM': 1.0, 'IN': 25.4}.get(str(units or 'MM').upper(), 1.0)
+            selected_units = str(dxf_user_units).strip().upper()
+            if selected_units in user_units_map:
+                source_code, source_name, source_to_mm = user_units_map[selected_units]
+                factor = source_to_mm / target_to_mm
+                target_name = 'Millimeters' if str(units or 'MM').upper() == 'MM' else 'Inches'
+                scale_info = {
+                    'factor': factor,
+                    'status': 'user_selected',
+                    'source_code': source_code,
+                    'source_units': source_name,
+                    'target_units': str(units or 'MM').upper(),
+                    'message': 'DXF physical scale applied from user-selected units: %s -> %s; factor=%s.' %
+                               (source_name, target_name, format(factor, '.12g'))
+                }
+        self.file_units_factor = scale_info['factor']
+        try:
+            import_report = dxf_import_report(dxf)
+            for message in dxf_import_report_messages(import_report):
+                self.app.inform.emit(message)
+            for warning in import_report['warnings']:
+                self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
+            if scale_info['status'] in ['reliable', 'user_selected']:
+                self.app.inform.emit(scale_info['message'])
             else:
-                self.solid_geometry.append(geos)
-        else:  # It's shapely geometry
-            self.solid_geometry = [self.solid_geometry, geos]
+                self.app.inform.emit('[WARNING_NOTCL] %s' % scale_info['message'])
+            for message in dxf_export_recommendation_messages():
+                self.app.inform.emit(message)
+        except Exception as e:
+            log.debug("Gerber.import_dxf_as_gerber() DXF diagnostics skipped --> %s" % str(e))
 
-        # flatten the self.solid_geometry list for import_dxf() to import DXF as Gerber
-        flat_geo = list(self.flatten_list(self.solid_geometry))
-        if flat_geo:
-            self.solid_geometry = unary_union(flat_geo)
-            self.follow_geometry = self.solid_geometry
-        else:
+        geos = getdxfgeo(dxf)
+
+        line_geometries = []
+        polygon_geometries = []
+
+        def add_polygon(poly_geo):
+            if poly_geo is None or poly_geo.is_empty:
+                return
+
+            if not poly_geo.is_valid:
+                try:
+                    poly_geo = poly_geo.buffer(0)
+                except Exception:
+                    log.warning("DXF as Gerber polygon repair failed. Geometry omitted.")
+                    return
+                if poly_geo is None or poly_geo.is_empty or not poly_geo.is_valid:
+                    log.warning("DXF as Gerber polygon repair did not produce valid geometry. Geometry omitted.")
+                    return
+
+            collect_geometry(poly_geo)
+
+        def add_line(line_geo):
+            if line_geo is None or line_geo.is_empty:
+                return
+
+            if isinstance(line_geo, LinearRing):
+                line_geo = LineString(line_geo.coords)
+
+            if len(line_geo.coords) >= 2:
+                line_geometries.append(line_geo)
+
+        def collect_geometry(geo):
+            if geo is None:
+                return
+
+            if isinstance(geo, (list, tuple)):
+                for sub_geo in geo:
+                    collect_geometry(sub_geo)
+                return
+
+            if geo.is_empty:
+                return
+
+            if isinstance(geo, Polygon):
+                if geo.is_valid:
+                    polygon_geometries.append(geo)
+                else:
+                    add_polygon(geo)
+                return
+
+            if isinstance(geo, MultiPolygon):
+                for sub_geo in geo.geoms:
+                    add_polygon(sub_geo)
+                return
+
+            if isinstance(geo, (LineString, LinearRing)):
+                add_line(geo)
+                return
+
+            if isinstance(geo, MultiLineString):
+                for sub_geo in geo.geoms:
+                    add_line(sub_geo)
+                return
+
+            if isinstance(geo, GeometryCollection):
+                for sub_geo in geo.geoms:
+                    collect_geometry(sub_geo)
+                return
+
+            log.warning("DXF as Gerber geometry omitted: %s" % geo.geom_type)
+
+        collect_geometry(geos)
+
+        if scale_info['factor'] != 1.0:
+            polygon_geometries = [
+                affinity.scale(geometry, xfact=scale_info['factor'], yfact=scale_info['factor'], origin=(0, 0))
+                for geometry in polygon_geometries
+            ]
+            line_geometries = [
+                affinity.scale(geometry, xfact=scale_info['factor'], yfact=scale_info['factor'], origin=(0, 0))
+                for geometry in line_geometries
+            ]
+
+        if move_to_first_quadrant:
+            bounded_geos = [geometry for geometry in polygon_geometries + line_geometries
+                            if geometry is not None and not geometry.is_empty]
+            if bounded_geos:
+                xmin = min(geometry.bounds[0] for geometry in bounded_geos)
+                ymin = min(geometry.bounds[1] for geometry in bounded_geos)
+                xmax = max(geometry.bounds[2] for geometry in bounded_geos)
+                ymax = max(geometry.bounds[3] for geometry in bounded_geos)
+                original_bounds = (xmin, ymin, xmax, ymax)
+
+                if xmin < 0 or ymin < 0:
+                    xoff = -xmin if xmin < 0 else 0.0
+                    yoff = -ymin if ymin < 0 else 0.0
+                    polygon_geometries = [
+                        affinity.translate(geometry, xoff=xoff, yoff=yoff)
+                        for geometry in polygon_geometries
+                    ]
+                    line_geometries = [
+                        affinity.translate(geometry, xoff=xoff, yoff=yoff)
+                        for geometry in line_geometries
+                    ]
+                    bounded_geos = [geometry for geometry in polygon_geometries + line_geometries
+                                    if geometry is not None and not geometry.is_empty]
+                    new_bounds = (
+                        min(geometry.bounds[0] for geometry in bounded_geos),
+                        min(geometry.bounds[1] for geometry in bounded_geos),
+                        max(geometry.bounds[2] for geometry in bounded_geos),
+                        max(geometry.bounds[3] for geometry in bounded_geos)
+                    )
+
+                    try:
+                        self.app.inform.emit("DXF geometry translated to first quadrant.")
+                        self.app.inform.emit("Translation applied:")
+                        self.app.inform.emit("X offset: %.6f" % xoff)
+                        self.app.inform.emit("Y offset: %.6f" % yoff)
+                        self.app.inform.emit("Original bounds: %s" % (original_bounds,))
+                        self.app.inform.emit("New bounds: %s" % (new_bounds,))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.app.inform.emit("DXF geometry already located in first quadrant.")
+                        self.app.inform.emit("No translation applied.")
+                    except Exception:
+                        pass
+
+        if line_geometries:
+            try:
+                merged_lines = linemerge(line_geometries) if len(line_geometries) > 1 else line_geometries[0]
+                line_geometries = []
+                collect_geometry(merged_lines)
+            except Exception:
+                log.warning("DXF as Gerber line merge failed. Keeping original line geometry.")
+
+        if not polygon_geometries and not line_geometries:
             return "fail"
 
         # create the self.apertures data structure
@@ -2289,9 +2446,30 @@ class Gerber(Geometry):
                 'geometry': []
             }
 
-        for pol in flat_geo:
-            new_el = {'solid': pol, 'follow': pol}
+        follow_geometries = []
+
+        for polygon_geo in polygon_geometries:
+            follow_geo = polygon_geo.boundary
+            follow_geometries.append(follow_geo)
+            new_el = {'solid': polygon_geo, 'follow': follow_geo}
             self.apertures['0']['geometry'].append(deepcopy(new_el))
+
+        for line_geo in line_geometries:
+            follow_geometries.append(line_geo)
+            new_el = {'follow': line_geo}
+            self.apertures['0']['geometry'].append(deepcopy(new_el))
+
+        if polygon_geometries:
+            self.solid_geometry = unary_union(polygon_geometries)
+        elif len(line_geometries) == 1:
+            self.solid_geometry = line_geometries[0]
+        else:
+            self.solid_geometry = unary_union(line_geometries)
+
+        if len(follow_geometries) == 1:
+            self.follow_geometry = follow_geometries[0]
+        else:
+            self.follow_geometry = unary_union(follow_geometries)
 
     def scale(self, xfactor, yfactor=None, point=None):
         """

@@ -9061,7 +9061,7 @@ class MenuFileHandlers(QtCore.QObject):
             move_to_first_quadrant = False
             extract_dxf_drills = False
             dxf_user_units = None
-            if type_of_obj == "geometry":
+            if type_of_obj in ["geometry", "gerber"]:
                 options_dialog = QtWidgets.QDialog(self.app.ui)
                 options_dialog.setWindowTitle(_("Import DXF Options"))
                 options_layout = QtWidgets.QVBoxLayout()
@@ -9075,14 +9075,17 @@ class MenuFileHandlers(QtCore.QObject):
                 move_to_first_quadrant_cb.setChecked(False)
                 options_layout.addWidget(move_to_first_quadrant_cb)
 
-                extract_dxf_drills_cb = QtWidgets.QCheckBox(_("Extract circular DXF geometry as Excellon drills"))
-                extract_dxf_drills_cb.setToolTip(
-                    _("Detect closed circular DXF geometry and create a separate Excellon object.\n\n"
-                      "The original Geometry object is kept unchanged.\n\n"
-                      "This option is disabled by default because not every circle in a DXF is a drill.")
-                )
-                extract_dxf_drills_cb.setChecked(False)
-                options_layout.addWidget(extract_dxf_drills_cb)
+                if type_of_obj == "geometry":
+                    extract_dxf_drills_cb = QtWidgets.QCheckBox(_("Extract circular DXF geometry as Excellon drills"))
+                    extract_dxf_drills_cb.setToolTip(
+                        _("Detect closed circular DXF geometry and create a separate Excellon object.\n\n"
+                          "The original Geometry object is kept unchanged.\n\n"
+                          "This option is disabled by default because not every circle in a DXF is a drill.")
+                    )
+                    extract_dxf_drills_cb.setChecked(False)
+                    options_layout.addWidget(extract_dxf_drills_cb)
+                else:
+                    extract_dxf_drills_cb = None
 
                 button_box = QtWidgets.QDialogButtonBox(
                     QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -9097,16 +9100,21 @@ class MenuFileHandlers(QtCore.QObject):
                     return
 
                 move_to_first_quadrant = move_to_first_quadrant_cb.isChecked()
-                extract_dxf_drills = extract_dxf_drills_cb.isChecked()
+                extract_dxf_drills = extract_dxf_drills_cb.isChecked() if extract_dxf_drills_cb is not None else False
 
                 if any(self.dxf_file_declares_units(filename) is False for filename in filenames if filename):
                     dxf_user_units = self.ask_dxf_user_units()
-                    if dxf_user_units is None:
+                    if dxf_user_units is None and type_of_obj == "geometry":
                         extract_dxf_drills = False
                         self.inform.emit(
                             '[WARNING_NOTCL] %s' %
                             _("DXF units were not selected. Geometry import will continue with factor 1.0; "
                               "DXF drill extraction was disabled.")
+                        )
+                    elif dxf_user_units is None:
+                        self.inform.emit(
+                            '[WARNING_NOTCL] %s' %
+                            _("DXF units were not selected. Gerber import will continue with factor 1.0.")
                         )
 
             for filename in filenames:
@@ -9120,7 +9128,13 @@ class MenuFileHandlers(QtCore.QObject):
                             ]
                         })
                     else:
-                        self.worker_task.emit({'fcn': self.import_dxf, 'params': [filename, type_of_obj]})
+                        self.worker_task.emit({
+                            'fcn': self.import_dxf,
+                            'params': [
+                                filename, type_of_obj, None, True, move_to_first_quadrant,
+                                False, dxf_user_units
+                            ]
+                        })
 
     def on_file_new_click(self):
         """
@@ -10572,7 +10586,12 @@ class MenuFileHandlers(QtCore.QObject):
                 )
                 imported_geometry['object'] = geo_obj
             elif obj_type == "gerber":
-                geo_obj.import_dxf_as_gerber(filename, units=units)
+                geo_obj.import_dxf_as_gerber(
+                    filename,
+                    units=units,
+                    move_to_first_quadrant=move_to_first_quadrant,
+                    dxf_user_units=dxf_user_units
+                )
             else:
                 return "fail"
 
