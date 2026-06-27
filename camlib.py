@@ -1363,23 +1363,106 @@ class Geometry(object):
 
         self.tools[1]['data']['name'] = self.options['name']
 
-    def import_dxf_as_geo(self, filename, units='MM'):
+    def import_dxf_as_geo(self, filename, units='MM', move_to_first_quadrant=False, dxf_user_units=None):
         """
         Imports shapes from an DXF file into the object's geometry.
 
-        :param filename:    Path to the DXF file.
-        :type filename:     str
-        :param units:       Application units
+        :param filename:                Path to the DXF file.
+        :type filename:                 str
+        :param units:                   Application units
+        :param move_to_first_quadrant:  Move imported DXF geometry to X/Y >= 0.
+        :type move_to_first_quadrant:   bool
+        :param dxf_user_units:          User-selected source units when DXF has no $INSUNITS.
+        :type dxf_user_units:           str|None
         :return: None
         """
         log.debug("Parsing DXF file geometry into a Geometry object solid geometry.")
 
         # Parse into list of shapely objects
         dxf = ezdxf.readfile(filename)
+        scale_info = dxf_physical_scale(dxf, target_units=units)
+        if scale_info['status'] == 'missing' and dxf_user_units:
+            user_units_map = {
+                'MM': (4, 'Millimeters', 1.0),
+                'IN': (1, 'Inches', 25.4),
+                'CM': (5, 'Centimeters', 10.0),
+                'M': (6, 'Meters', 1000.0)
+            }
+            target_to_mm = {'MM': 1.0, 'IN': 25.4}.get(str(units or 'MM').upper(), 1.0)
+            selected_units = str(dxf_user_units).strip().upper()
+            if selected_units in user_units_map:
+                source_code, source_name, source_to_mm = user_units_map[selected_units]
+                factor = source_to_mm / target_to_mm
+                target_name = 'Millimeters' if str(units or 'MM').upper() == 'MM' else 'Inches'
+                scale_info = {
+                    'factor': factor,
+                    'status': 'user_selected',
+                    'source_code': source_code,
+                    'source_units': source_name,
+                    'target_units': str(units or 'MM').upper(),
+                    'message': 'DXF physical scale applied from user-selected units: %s -> %s; factor=%s.' %
+                               (source_name, target_name, format(factor, '.12g'))
+                }
+        self.file_units_factor = scale_info['factor']
+        try:
+            import_report = dxf_import_report(dxf)
+            for message in dxf_import_report_messages(import_report):
+                self.app.inform.emit(message)
+            for warning in import_report['warnings']:
+                self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
+            if scale_info['status'] in ['reliable', 'user_selected']:
+                self.app.inform.emit(scale_info['message'])
+            else:
+                self.app.inform.emit('[WARNING_NOTCL] %s' % scale_info['message'])
+            for message in dxf_export_recommendation_messages():
+                self.app.inform.emit(message)
+        except Exception as e:
+            log.debug("camlib.Geometry.import_dxf_as_geo() DXF diagnostics skipped --> %s" % str(e))
+
         geos = getdxfgeo(dxf)
 
         # trying to optimize the resulting geometry by merging contiguous lines
         geos = list(self.flatten_list(geos))
+        if scale_info['factor'] != 1.0:
+            geos = [
+                affinity.scale(geometry, xfact=scale_info['factor'], yfact=scale_info['factor'], origin=(0, 0))
+                for geometry in geos
+            ]
+
+        if move_to_first_quadrant:
+            bounded_geos = [geometry for geometry in geos if geometry is not None and not geometry.is_empty]
+            if bounded_geos:
+                xmin = min(geometry.bounds[0] for geometry in bounded_geos)
+                ymin = min(geometry.bounds[1] for geometry in bounded_geos)
+                xmax = max(geometry.bounds[2] for geometry in bounded_geos)
+                ymax = max(geometry.bounds[3] for geometry in bounded_geos)
+                original_bounds = (xmin, ymin, xmax, ymax)
+
+                if xmin < 0 or ymin < 0:
+                    xoff = -xmin if xmin < 0 else 0.0
+                    yoff = -ymin if ymin < 0 else 0.0
+                    geos = [
+                        affinity.translate(geometry, xoff=xoff, yoff=yoff)
+                        for geometry in geos
+                    ]
+                    bounded_geos = [geometry for geometry in geos if geometry is not None and not geometry.is_empty]
+                    new_bounds = (
+                        min(geometry.bounds[0] for geometry in bounded_geos),
+                        min(geometry.bounds[1] for geometry in bounded_geos),
+                        max(geometry.bounds[2] for geometry in bounded_geos),
+                        max(geometry.bounds[3] for geometry in bounded_geos)
+                    )
+
+                    self.app.inform.emit("DXF geometry translated to first quadrant.")
+                    self.app.inform.emit("Translation applied:")
+                    self.app.inform.emit("X offset: %.6f" % xoff)
+                    self.app.inform.emit("Y offset: %.6f" % yoff)
+                    self.app.inform.emit("Original bounds: %s" % (original_bounds,))
+                    self.app.inform.emit("New bounds: %s" % (new_bounds,))
+                else:
+                    self.app.inform.emit("DXF geometry already located in first quadrant.")
+                    self.app.inform.emit("No translation applied.")
+
         geos_polys = []
         geos_lines = []
         for g in geos:

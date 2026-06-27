@@ -30,12 +30,13 @@ import random
 import simplejson as json
 import shutil
 import lzma
+import math
 from datetime import datetime
 import time
 import ctypes
 import traceback
 
-from shapely.geometry import Point, MultiPolygon
+from shapely.geometry import Point, MultiPolygon, Polygon, LineString
 from shapely.ops import unary_union
 from io import StringIO
 
@@ -52,6 +53,7 @@ from xml.dom.minidom import parseString as parse_xml_string
 from multiprocessing.connection import Listener, Client
 from multiprocessing import Pool
 import socket
+import ezdxf
 
 # ####################################################################################################################
 # ###################################      Imports part of FlatCAM       #############################################
@@ -8990,6 +8992,46 @@ class MenuFileHandlers(QtCore.QObject):
                 if filename != '':
                     self.worker_task.emit({'fcn': self.import_svg, 'params': [filename, type_of_obj]})
 
+    def dxf_file_declares_units(self, filename):
+        try:
+            dxf = ezdxf.readfile(filename)
+            return '$INSUNITS' in dxf.header
+        except Exception as e:
+            self.app.log.debug("MenuFileHandlers.dxf_file_declares_units() --> %s" % str(e))
+            return True
+
+    def ask_dxf_user_units(self):
+        units_dialog = QtWidgets.QDialog(self.app.ui)
+        units_dialog.setWindowTitle(_("DXF Units"))
+        units_layout = QtWidgets.QVBoxLayout()
+
+        units_label = QtWidgets.QLabel(
+            _("This DXF file does not declare drawing units.\n"
+              "Please select the units used to create this DXF file:")
+        )
+        units_layout.addWidget(units_label)
+
+        units_combo = QtWidgets.QComboBox()
+        units_combo.addItem(_("Millimeters"), 'MM')
+        units_combo.addItem(_("Inches"), 'IN')
+        units_combo.addItem(_("Centimeters"), 'CM')
+        units_combo.addItem(_("Meters"), 'M')
+        units_combo.setCurrentIndex(0)
+        units_layout.addWidget(units_combo)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(units_dialog.accept)
+        button_box.rejected.connect(units_dialog.reject)
+        units_layout.addWidget(button_box)
+
+        units_dialog.setLayout(units_layout)
+        if units_dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+
+        return units_combo.currentData()
+
     def on_file_importdxf(self, type_of_obj):
         """
         Callback for menu item File->Import DXF.
@@ -9016,9 +9058,69 @@ class MenuFileHandlers(QtCore.QObject):
         if len(filenames) == 0:
             self.inform.emit('[WARNING_NOTCL] %s' % _("Cancelled."))
         else:
+            move_to_first_quadrant = False
+            extract_dxf_drills = False
+            dxf_user_units = None
+            if type_of_obj == "geometry":
+                options_dialog = QtWidgets.QDialog(self.app.ui)
+                options_dialog.setWindowTitle(_("Import DXF Options"))
+                options_layout = QtWidgets.QVBoxLayout()
+
+                move_to_first_quadrant_cb = QtWidgets.QCheckBox(_("Normalize geometry to first quadrant"))
+                move_to_first_quadrant_cb.setToolTip(
+                    _("Translate the imported DXF geometry so that its minimum X and Y coordinates become zero.\n\n"
+                      "Only a translation is performed.\n\n"
+                      "No scaling, mirroring, rotation or geometry modification is applied.")
+                )
+                move_to_first_quadrant_cb.setChecked(False)
+                options_layout.addWidget(move_to_first_quadrant_cb)
+
+                extract_dxf_drills_cb = QtWidgets.QCheckBox(_("Extract circular DXF geometry as Excellon drills"))
+                extract_dxf_drills_cb.setToolTip(
+                    _("Detect closed circular DXF geometry and create a separate Excellon object.\n\n"
+                      "The original Geometry object is kept unchanged.\n\n"
+                      "This option is disabled by default because not every circle in a DXF is a drill.")
+                )
+                extract_dxf_drills_cb.setChecked(False)
+                options_layout.addWidget(extract_dxf_drills_cb)
+
+                button_box = QtWidgets.QDialogButtonBox(
+                    QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+                )
+                button_box.accepted.connect(options_dialog.accept)
+                button_box.rejected.connect(options_dialog.reject)
+                options_layout.addWidget(button_box)
+
+                options_dialog.setLayout(options_layout)
+                if options_dialog.exec_() != QtWidgets.QDialog.Accepted:
+                    self.inform.emit('[WARNING_NOTCL] %s' % _("Cancelled."))
+                    return
+
+                move_to_first_quadrant = move_to_first_quadrant_cb.isChecked()
+                extract_dxf_drills = extract_dxf_drills_cb.isChecked()
+
+                if any(self.dxf_file_declares_units(filename) is False for filename in filenames if filename):
+                    dxf_user_units = self.ask_dxf_user_units()
+                    if dxf_user_units is None:
+                        extract_dxf_drills = False
+                        self.inform.emit(
+                            '[WARNING_NOTCL] %s' %
+                            _("DXF units were not selected. Geometry import will continue with factor 1.0; "
+                              "DXF drill extraction was disabled.")
+                        )
+
             for filename in filenames:
                 if filename != '':
-                    self.worker_task.emit({'fcn': self.import_dxf, 'params': [filename, type_of_obj]})
+                    if type_of_obj == "geometry":
+                        self.worker_task.emit({
+                            'fcn': self.import_dxf,
+                            'params': [
+                                filename, type_of_obj, None, True, move_to_first_quadrant,
+                                extract_dxf_drills, dxf_user_units
+                            ]
+                        })
+                    else:
+                        self.worker_task.emit({'fcn': self.import_dxf, 'params': [filename, type_of_obj]})
 
     def on_file_new_click(self):
         """
@@ -10267,15 +10369,181 @@ class MenuFileHandlers(QtCore.QObject):
 
             return ret
 
-    def import_dxf(self, filename, geo_type='geometry', outname=None, plot=True):
+    def flatten_dxf_drill_geometry(self, geometry):
+        if geometry is None:
+            return
+        if isinstance(geometry, (list, tuple)):
+            for item in geometry:
+                for flat_item in self.flatten_dxf_drill_geometry(item):
+                    yield flat_item
+        elif hasattr(geometry, 'geoms'):
+            for item in geometry.geoms:
+                for flat_item in self.flatten_dxf_drill_geometry(item):
+                    yield flat_item
+        else:
+            yield geometry
+
+    def dxf_circular_drill_polygon(self, geometry, close_tolerance=1e-6):
+        if geometry is None or geometry.is_empty:
+            return None
+
+        if isinstance(geometry, Polygon):
+            if len(geometry.interiors) > 0:
+                return None
+            return geometry if geometry.is_valid and geometry.area > 0 else None
+
+        if isinstance(geometry, LineString):
+            coordinates = list(geometry.coords)
+            if len(coordinates) < 4:
+                return None
+            if Point(coordinates[0]).distance(Point(coordinates[-1])) > close_tolerance:
+                return None
+            if coordinates[0] != coordinates[-1]:
+                coordinates.append(coordinates[0])
+
+            polygon = Polygon(coordinates)
+            if polygon.is_empty or polygon.is_valid is False or polygon.area <= 0:
+                return None
+            return polygon
+
+        return None
+
+    def extract_dxf_circular_drills(self, solid_geometry, min_diameter=0.2, max_diameter=6.0,
+                                    diameter_tolerance=0.01, min_circularity=0.97,
+                                    max_roundness_error=0.005):
+        drill_candidates = []
+        rejected = []
+
+        for index, geometry in enumerate(self.flatten_dxf_drill_geometry(solid_geometry)):
+            polygon = self.dxf_circular_drill_polygon(geometry)
+            if polygon is None:
+                rejected.append({'index': index, 'reason': 'not_closed_simple_geometry'})
+                continue
+
+            xmin, ymin, xmax, ymax = polygon.bounds
+            width = xmax - xmin
+            height = ymax - ymin
+            if width <= 0 or height <= 0:
+                rejected.append({'index': index, 'reason': 'zero_bounds'})
+                continue
+
+            perimeter = polygon.length
+            circularity = 4.0 * math.pi * polygon.area / (perimeter * perimeter) if perimeter else 0.0
+            diameter_from_area = 2.0 * math.sqrt(polygon.area / math.pi)
+            diameter_from_bounds = (width + height) / 2.0
+            roundness_error = abs(width - height) / max(width, height)
+
+            if circularity <= min_circularity:
+                rejected.append({'index': index, 'reason': 'low_circularity', 'circularity': circularity})
+                continue
+            if roundness_error > max_roundness_error:
+                rejected.append({'index': index, 'reason': 'not_square_bounds', 'roundness_error': roundness_error})
+                continue
+            if diameter_from_bounds < min_diameter - 1e-6 or diameter_from_bounds > max_diameter + 1e-6:
+                rejected.append({'index': index, 'reason': 'diameter_out_of_range', 'diameter': diameter_from_bounds})
+                continue
+
+            drill_candidates.append({
+                'index': index,
+                'center': (polygon.centroid.x, polygon.centroid.y),
+                'diameter': diameter_from_bounds,
+                'diameter_from_area': diameter_from_area,
+                'circularity': circularity,
+                'roundness_error': roundness_error,
+                'geometry': geometry
+            })
+
+        tools = {}
+        for drill in drill_candidates:
+            drill_point = Point(drill['center'])
+            drill_diameter = drill['diameter']
+            tool_id = None
+
+            for tid, tool in tools.items():
+                if abs(tool['tooldia'] - drill_diameter) <= diameter_tolerance:
+                    tool_id = tid
+                    break
+
+            if tool_id is None:
+                tool_id = max(tools.keys()) + 1 if tools else 1
+                tools[tool_id] = {
+                    'tooldia': drill_diameter,
+                    'drills': [],
+                    'slots': [],
+                    'solid_geometry': []
+                }
+
+            tools[tool_id]['drills'].append(drill_point)
+            tools[tool_id]['solid_geometry'].append(drill_point.buffer(tools[tool_id]['tooldia'] / 2.0))
+
+        return {
+            'tools': tools,
+            'drills': drill_candidates,
+            'rejected': rejected
+        }
+
+    def import_dxf_drills(self, filename, drill_result, outname=None, plot=True, units_source=None):
+        tools = drill_result.get('tools', {})
+        drill_count = sum(len(tool.get('drills', [])) for tool in tools.values())
+
+        self.inform.emit("DXF Drill Recognition:")
+        self.inform.emit("Circular drill candidates detected: %d" % len(drill_result.get('drills', [])))
+        if units_source:
+            self.inform.emit("DXF units source: %s" % units_source)
+
+        if tools:
+            self.inform.emit("Diameter groups:")
+            for tool in tools.values():
+                self.inform.emit(
+                    "%.3f mm: %d drills" % (tool['tooldia'], len(tool.get('drills', [])))
+                )
+
+        if not tools or drill_count == 0:
+            self.inform.emit('[WARNING_NOTCL] %s' % _("No circular DXF drills were detected."))
+            return 'fail'
+
+        name = outname or (filename.split('/')[-1].split('\\')[-1].rpartition('.')[0] + "_drills")
+
+        def obj_init(exc_obj, app_obj):
+            exc_obj.tools = tools
+            exc_obj.drills = [
+                drill
+                for tool in tools.values()
+                for drill in tool.get('drills', [])
+            ]
+            exc_obj.create_geometry()
+            exc_obj.source_file = app_obj.f_handlers.export_excellon(
+                obj_name=name, local_use=exc_obj, filename=None, use_thread=False
+            )
+
+            app_obj.inform.emit(
+                '[success] %s: %d %s, %d %s' %
+                (_("Created"), drill_count, _("drills"), len(tools), _("tools"))
+            )
+            app_obj.inform.emit("Excellon object created from DXF circular geometry.")
+
+        with self.app.proc_container.new('%s ...' % _("Importing")):
+            ret = self.app.app_obj.new_object("excellon", name, obj_init, autoselected=False, plot=plot)
+
+            if ret == 'fail':
+                self.inform.emit('[ERROR_NOTCL]%s' % _('Import failed.'))
+                return 'fail'
+
+            return ret
+
+    def import_dxf(self, filename, geo_type='geometry', outname=None, plot=True, move_to_first_quadrant=False,
+                   extract_dxf_drills=False, dxf_user_units=None):
         """
         Adds a new Geometry Object to the projects and populates
         it with shapes extracted from the DXF file.
 
-        :param filename:    Path to the DXF file.
-        :param geo_type:    Type of FlatCAM object that will be created from DXF
-        :param outname:     Name for the imported Geometry
-        :param plot:        If True then the resulting object will be plotted on canvas
+        :param filename:                  Path to the DXF file.
+        :param geo_type:                  Type of FlatCAM object that will be created from DXF
+        :param outname:                   Name for the imported Geometry
+        :param plot:                      If True then the resulting object will be plotted on canvas
+        :param move_to_first_quadrant:    Move DXF Geometry import to X/Y >= 0.
+        :param extract_dxf_drills:        Extract circular Geometry as Excellon drills.
+        :param dxf_user_units:            User-selected DXF units when $INSUNITS is missing.
         :return:
         """
         self.app.log.debug(" ********* Importing DXF as: %s ********* " % geo_type.capitalize())
@@ -10292,9 +10560,17 @@ class MenuFileHandlers(QtCore.QObject):
 
         units = self.defaults['units'].upper()
 
+        imported_geometry = {}
+
         def obj_init(geo_obj, app_obj):
             if obj_type == "geometry":
-                geo_obj.import_dxf_as_geo(filename, units=units)
+                geo_obj.import_dxf_as_geo(
+                    filename,
+                    units=units,
+                    move_to_first_quadrant=move_to_first_quadrant,
+                    dxf_user_units=dxf_user_units
+                )
+                imported_geometry['object'] = geo_obj
             elif obj_type == "gerber":
                 geo_obj.import_dxf_as_gerber(filename, units=units)
             else:
@@ -10321,6 +10597,22 @@ class MenuFileHandlers(QtCore.QObject):
 
             # Register recent file
             self.app.file_opened.emit("dxf", filename)
+
+            if obj_type == "geometry" and extract_dxf_drills:
+                geo_obj = imported_geometry.get('object')
+                if geo_obj is not None:
+                    drill_result = self.extract_dxf_circular_drills(geo_obj.solid_geometry)
+                    units_source = "User selected %s" % {
+                        'MM': 'Millimeters',
+                        'IN': 'Inches',
+                        'CM': 'Centimeters',
+                        'M': 'Meters'
+                    }.get(str(dxf_user_units).upper(), dxf_user_units) if dxf_user_units else "DXF declared units"
+                    drill_name = name.rpartition('.')[0] + "_drills"
+                    self.import_dxf_drills(
+                        filename, drill_result=drill_result, outname=drill_name,
+                        plot=plot, units_source=units_source
+                    )
 
     def open_gerber(self, filename, outname=None, plot=True, from_tcl=False):
         """
