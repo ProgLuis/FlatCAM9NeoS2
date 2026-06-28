@@ -865,7 +865,9 @@ class Excellon(Geometry):
                         self.units = {"METRIC": "MM", "INCH": "IN"}[match.group(1)]
                         self.excellon_units_found = self.units
 
-                        self.zeros = match.group(2)  # "T" or "L". Might be empty
+                        zeros_type = match.group(2)  # "T" or "L". Might be empty
+                        if zeros_type:
+                            self.zeros = zeros_type
                         self.excellon_format = match.group(3)
                         if self.excellon_format:
                             upper = len(self.excellon_format.partition('.')[0])
@@ -925,7 +927,9 @@ class Excellon(Geometry):
                     self.units = {"METRIC": "MM", "INCH": "IN"}[match.group(1)]
                     self.excellon_units_found = self.units
 
-                    self.zeros = match.group(2)  # "T" or "L". Might be empty
+                    zeros_type = match.group(2)  # "T" or "L". Might be empty
+                    if zeros_type:
+                        self.zeros = zeros_type
                     self.excellon_format = match.group(3)
                     if self.excellon_format:
                         upper = len(self.excellon_format.partition('.')[0])
