@@ -12,6 +12,7 @@ from ezdxf.math.vector import Vector as ezdxf_vector
 
 from appParsers.ParseFont import *
 from appParsers.ParseDXF_Spline import *
+from appParsers.DXFSourceDetector import detect_dxf_source
 import math
 import re
 import logging
@@ -445,6 +446,7 @@ def dxf_import_report(dxf_object):
     non_uniform_insert_layers = {}
     text_layers = set()
     image_references = []
+    source_detection = detect_dxf_source(filename=filename, doc=dxf_object)
 
     for entity in dxf_object.modelspace():
         kind = entity.dxftype()
@@ -751,6 +753,7 @@ def dxf_import_report(dxf_object):
         'simple_2d_profile': simple_2d_profile,
         'complex_profile': complex_profile,
         'orientation_messages': orientation_messages,
+        'source_detection': source_detection,
         'source_hint': proteus_outline_detection['source_hint'],
         'proteus_outline_detection': proteus_outline_detection,
         'counts': counts,
@@ -865,6 +868,32 @@ def dxf_import_report_messages(report):
         'DXF Compatibility:',
         '- Opened version: %s / %s' % (report['version'], report['release'])
     ]
+
+    source_detection = report.get('source_detection') or {}
+    if source_detection:
+        source_names = {
+            'illustrator': 'Adobe Illustrator',
+            'kicad': 'KiCad',
+            'inkscape': 'Inkscape',
+            'proteus': 'Proteus/ARES',
+            'unknown': 'Unknown'
+        }
+        source = source_names.get(
+            str(source_detection.get('source', 'unknown')).lower(),
+            str(source_detection.get('source', 'unknown')).capitalize()
+        )
+        confidence = str(source_detection.get('confidence', 'low')).capitalize()
+        messages.extend([
+            'DXF Source Detection:',
+            '- Source: %s' % source,
+            '- Profile: %s' % source_detection.get('export_profile', 'Unknown DXF source'),
+            '- Confidence: %s' % confidence
+        ])
+        recommendations = source_detection.get('recommendations', [])
+        # Proteus outline-only already has a detailed warning in the DXF report; avoid repeating it here.
+        if recommendations and not report.get('proteus_outline_detection', {}).get('detected'):
+            messages.append('- Recommendation: %s' % recommendations[0])
+
     messages.extend(report['orientation_messages'])
     messages.extend([
         report['units_message']

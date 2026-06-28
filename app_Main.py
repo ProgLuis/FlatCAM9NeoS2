@@ -85,6 +85,7 @@ from appParsers.ParseExcellon import Excellon
 from appParsers.ParseGerber import Gerber, gerber_read_x2_metadata
 from appParsers.ParseSVG import extract_proteus_svg_drills, extract_illustrator_svg_drills, \
     svg_detect_overlapping_compound_paths, svg_physical_scale, svg_source_advisor
+from appParsers.DXFSourceDetector import detect_dxf_source
 from camlib import to_dict, dict2obj, ET, ParseError, Geometry, CNCjob
 
 # FlatCAM appGUI
@@ -9061,6 +9062,35 @@ class MenuFileHandlers(QtCore.QObject):
             move_to_first_quadrant = False
             extract_dxf_drills = False
             dxf_user_units = None
+            dxf_source_results = []
+
+            if type_of_obj == "geometry":
+                for filename in filenames:
+                    if not filename:
+                        continue
+                    try:
+                        dxf_source_results.append(detect_dxf_source(filename=filename))
+                    except Exception as e:
+                        self.app.log.debug("DXF source detection skipped for UI options --> %s" % str(e))
+                        dxf_source_results.append({
+                            'source': 'unknown',
+                            'export_profile': 'Unknown DXF source',
+                            'confidence': 'low',
+                            'drill_recognition_policy': 'manual',
+                            'recommendations': [
+                                'DXF source could not be determined with high confidence. '
+                                'Drill extraction may produce unexpected results.'
+                            ]
+                        })
+
+            drill_policies = [result.get('drill_recognition_policy', 'manual') for result in dxf_source_results]
+            if any(policy in ['hide', 'manual'] for policy in drill_policies):
+                dxf_drill_policy = 'hide'
+            elif any(policy == 'fallback' for policy in drill_policies):
+                dxf_drill_policy = 'fallback'
+            else:
+                dxf_drill_policy = 'allow'
+
             if type_of_obj in ["geometry", "gerber"]:
                 options_dialog = QtWidgets.QDialog(self.app.ui)
                 options_dialog.setWindowTitle(_("Import DXF Options"))
@@ -9076,14 +9106,34 @@ class MenuFileHandlers(QtCore.QObject):
                 options_layout.addWidget(move_to_first_quadrant_cb)
 
                 if type_of_obj == "geometry":
-                    extract_dxf_drills_cb = QtWidgets.QCheckBox(_("Extract circular DXF geometry as Excellon drills"))
-                    extract_dxf_drills_cb.setToolTip(
-                        _("Detect closed circular DXF geometry and create a separate Excellon object.\n\n"
-                          "The original Geometry object is kept unchanged.\n\n"
-                          "This option is disabled by default because not every circle in a DXF is a drill.")
-                    )
-                    extract_dxf_drills_cb.setChecked(False)
-                    options_layout.addWidget(extract_dxf_drills_cb)
+                    if dxf_drill_policy in ['allow', 'fallback']:
+                        extract_dxf_drills_cb = QtWidgets.QCheckBox(
+                            _("Extract circular DXF geometry as Excellon drills")
+                        )
+                        extract_dxf_drills_cb.setToolTip(
+                            _("Detect closed circular DXF geometry and create a separate Excellon object.\n\n"
+                              "The original Geometry object is kept unchanged.\n\n"
+                              "This option is disabled by default because not every circle in a DXF is a drill.")
+                        )
+                        extract_dxf_drills_cb.setChecked(False)
+                        options_layout.addWidget(extract_dxf_drills_cb)
+
+                        if dxf_drill_policy == 'fallback':
+                            fallback_label = QtWidgets.QLabel(
+                                _("Dedicated Excellon .drl is recommended. DXF drill extraction is only a fallback "
+                                  "and may produce unexpected results.")
+                            )
+                            fallback_label.setWordWrap(True)
+                            options_layout.addWidget(fallback_label)
+                    else:
+                        extract_dxf_drills_cb = None
+                        if dxf_source_results:
+                            recommendation = dxf_source_results[0].get('recommendations', [])
+                            policy_label_text = recommendation[0] if recommendation else \
+                                _("DXF drill extraction is not recommended for this file profile.")
+                            policy_label = QtWidgets.QLabel(policy_label_text)
+                            policy_label.setWordWrap(True)
+                            options_layout.addWidget(policy_label)
                 else:
                     extract_dxf_drills_cb = None
 
