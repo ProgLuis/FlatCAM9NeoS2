@@ -1056,6 +1056,7 @@ class App(QtCore.QObject):
         self.transform_tool = None
         self.properties_tool = None
         self.pdf_tool = None
+        self.pdf_geometry_tool = None
         self.image_tool = None
         self.pcb_wizard_tool = None
         self.cal_exc_tool = None
@@ -2063,6 +2064,11 @@ class App(QtCore.QObject):
         self.pdf_tool.install(icon=QtGui.QIcon(self.resource_location + '/pdf32.png'),
                               pos=self.ui.menufileimport,
                               separator=True)
+
+        self.pdf_geometry_tool = ToolPDFGeometry(self)
+        self.pdf_geometry_tool.install(icon=QtGui.QIcon(self.resource_location + '/pdf32.png'),
+                                       pos=self.ui.menufileimport,
+                                       separator=True)
 
         self.image_tool = ToolImage(self)
         self.image_tool.install(icon=QtGui.QIcon(self.resource_location + '/image32.png'),
