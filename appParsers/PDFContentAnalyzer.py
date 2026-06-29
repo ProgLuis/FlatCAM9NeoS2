@@ -204,7 +204,7 @@ def _build_recommendations(result):
 
     if content_type == 'vector':
         result['recommendations'].append(
-            'Vector PDF detected. Current PDF Import Tool can be evaluated as PDF as Gerber Object.'
+            'Vector PDF detected. Current PDF import path creates Gerber Object(s).'
         )
     elif content_type == 'raster':
         result['recommendations'].append(

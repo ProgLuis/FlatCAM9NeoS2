@@ -48,7 +48,7 @@ class ToolPDF(AppTool):
     Reference here: https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/pdf_reference_archives/PDFReference.pdf
     Return a list of geometries
     """
-    toolName = _("PDF Import Tool")
+    toolName = _("PDF as Gerber Object")
 
     def __init__(self, app):
         AppTool.__init__(self, app)
@@ -133,7 +133,7 @@ class ToolPDF(AppTool):
         if pages and pages > 1:
             self.app.inform.emit(
                 '[WARNING_NOTCL] %s' %
-                _("Multi-page PDF detected. The current PDF import tool has no page selector yet.")
+                _("Multi-page PDF detected. The current PDF as Gerber Object flow has no page selector yet.")
             )
 
         warnings = analysis.get('warnings') or []

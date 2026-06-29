@@ -4453,7 +4453,7 @@ class ShortcutsTab(QtWidgets.QWidget):
                     _('Ctrl+N'), _("New Project"),
                     _('Ctrl+O'), _("Open Project"),
                     _('Ctrl+P'), _("Print (PDF)"),
-                    _('Ctrl+Q'), _("PDF Import Tool"),
+                    _('Ctrl+Q'), _("PDF as Gerber Object"),
                     _('Ctrl+S'), _("Save Project"),
                     _('Ctrl+F10'), _("Toggle Plot Area"),
 
