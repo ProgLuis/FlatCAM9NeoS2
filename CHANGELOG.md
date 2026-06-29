@@ -3,6 +3,168 @@ FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition)
 Maintainer: Luis Enrique Yacupoma Aguirre
 =================================================
 
+28.06.2026
+
+DXF Compatibility Completed: Geometry, Gerber and Source Profile Detection
+
+* Completed the DXF modernization block for FlatCAM 9 Neo S2.
+* Validated both major DXF import workflows:
+  * `Import -> DXF as Geometry Object`.
+  * `Import -> DXF as Gerber Object`.
+* Added DXF source/export profile detection for safer diagnostics and workflow guidance.
+* Added profile-aware Drill Recognition policy for DXF imports.
+* Preserved the no-regression policy for already stable workflows.
+
+Import -> DXF as Geometry Object:
+
+* Validated Adobe Illustrator DXF imports:
+  * R14 export profile.
+  * R2000 export profile.
+  * R2010/R2011/R2012 export profile.
+* Validated KiCad DXF imports:
+  * KiCad Copper DXF.
+  * `B.Cu`.
+  * `F.Cu`.
+  * Real KiCad DXF detected as `AC1009 / R12`.
+* Validated Inkscape DXF imports:
+  * R12.
+  * R2000-style DXF, even when the Inkscape option is presented as R14.
+* Diagnosed Proteus/ARES DXF outline-only exports.
+* Added optional `Normalize geometry to first quadrant`.
+* The normalization applies only a translation when `xmin` or `ymin` are negative.
+* The normalization does not mirror, scale, rotate, resize, reshape or alter areas.
+* Original dimensions, distances, areas and orientation are preserved.
+
+Import -> DXF as Gerber Object:
+
+* Improved DXF-to-Gerber import for mixed geometry.
+* Lines and polygons are separated safely before Gerber construction.
+* `linemerge()` is applied only to linear geometry.
+* `Polygon` and `MultiPolygon` are preserved as solid copper geometry.
+* `LineString` and `MultiLineString` are preserved as follow geometry.
+* Holes/interiors are preserved in validated Compound Path and Pathfinder-style cases.
+* Validated compatibility with Adobe Illustrator, KiCad and Inkscape DXF profiles.
+* `Import -> DXF as Gerber Object` does not offer Excellon/drill extraction.
+* Geometry import may create derived objects such as Excellon drills.
+* Gerber import remains focused on copper/manufacturing geometry.
+
+Adobe Illustrator DXF improvements:
+
+* Improved SPLINE reconstruction by using the ezdxf construction tool approximation path.
+* Corrected circular SPLINE reconstruction where Illustrator drill circles could appear as rounded squares.
+* Validated with the Illustrator `12 drill` test files.
+* Illustrator circular DXF geometry can generate Excellon objects when the profile allows it.
+* Drill candidates are grouped by diameter.
+* Recognized drill diameter range:
+  * 0.2 mm to 6.0 mm.
+* The original Geometry object is preserved.
+* The Excellon object is created separately.
+
+KiCad DXF and Excellon:
+
+* KiCad DXF Copper imports correctly as Geometry and Gerber.
+* `B.Cu` and `F.Cu` were validated.
+* KiCad DXF mainly uses `LINE` and `CIRCLE` entities in the tested files.
+* KiCad DXF is not recommended as the primary source for drill data.
+* Dedicated KiCad Excellon `.drl` files are recommended for drilling.
+* Improved standard Excellon compatibility by accepting simple unit declarations.
+* The Excellon parser now accepts:
+  * `METRIC`.
+  * `METRIC,LZ`.
+  * `METRIC,TZ`.
+  * `INCH`.
+  * `INCH,LZ`.
+  * `INCH,TZ`.
+* This is a standard Excellon compatibility improvement, not a KiCad-specific hack.
+
+Inkscape DXF and SVG guidance:
+
+* Inkscape DXF R12 imports correctly.
+* Inkscape DXF R2000-style imports correctly.
+* Inkscape DXF is useful for contours and linear geometry.
+* For filled copper, pads, filled areas and richer PCB artwork, SVG is recommended.
+* DXF drill extraction is not recommended for Inkscape DXF because drill semantics are ambiguous.
+* Inkscape SVG preserves fill, stroke, stroke-width, layers and drawing semantics better than DXF.
+
+Proteus/ARES DXF guidance:
+
+* The Proteus/ARES outline-only DXF profile is detected.
+* This DXF profile may contain only the board outline.
+* It is not recommended for copper or drill extraction.
+* Recommended alternatives:
+  * Gerber.
+  * Gerber + Excellon.
+  * SVG.
+  * Future vector PDF workflow.
+
+DXF Source & Export Profile Detection:
+
+* Added `appParsers/DXFSourceDetector.py`.
+* Added pure analysis function:
+  * `detect_dxf_source(filename=None, doc=None, raw_text=None)`.
+* The detector does not print messages, create objects, alter geometry or modify DXF files.
+* The detector returns:
+  * `source`.
+  * `export_profile`.
+  * `confidence`.
+  * `score`.
+  * `acad_version`.
+  * `dxf_version`.
+  * `supports`.
+  * `evidence`.
+  * `warnings`.
+  * `recommendations`.
+  * `drill_recognition_policy`.
+* Detected profiles:
+  * `illustrator`.
+  * `kicad`.
+  * `inkscape`.
+  * `proteus`.
+  * `unknown`.
+
+DXF Drill Recognition policy:
+
+* Adobe Illustrator DXF:
+  * policy: `allow`.
+  * `Extract circular DXF geometry as Excellon drills` is shown.
+* KiCad Copper DXF:
+  * policy: `fallback`.
+  * Drill extraction is shown only as a fallback.
+  * It is disabled by default.
+  * Dedicated `.drl` Excellon files are recommended.
+* KiCad Drill Map DXF:
+  * policy: `hide`.
+  * Drill extraction is not offered.
+* Inkscape DXF:
+  * policy: `hide`.
+  * Drill extraction is not offered.
+  * SVG is recommended for richer PCB artwork.
+* Proteus/ARES outline-only DXF:
+  * policy: `hide`.
+  * Drill extraction is not offered.
+* Unknown DXF:
+  * policy: `manual`.
+  * The current UI hides drill extraction to avoid false positives.
+
+DXF UI and diagnostic rules:
+
+* Only `Import -> DXF as Geometry Object` can offer Excellon drill extraction.
+* `Import -> DXF as Gerber Object` never offers Excellon/drill extraction.
+* DXF Source Detection complements the existing DXF diagnostics.
+* Existing warnings are not duplicated.
+* The detector feeds diagnostics and UI policy without adding message spam.
+
+Regression and protected workflows:
+
+* Preserved `Open Gerber`.
+* Preserved `Open Excellon`.
+* Preserved `SVG as Geometry`.
+* Preserved `SVG as Gerber`.
+* Preserved `DXF as Geometry`.
+* Preserved `DXF as Gerber`.
+* Preserved CNCJob generation workflow.
+* Preserved exporters.
+
 22.06.2026
 
 Complete Proteus and Illustrator SVG Tiny 1.2 CAM Workflow Support
