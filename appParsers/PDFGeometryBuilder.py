@@ -77,7 +77,10 @@ class PDFGeometryBuilder:
             yield header, raw_stream
             pos = end_pos + len(b'endstream')
 
-    def extract_pdf_vector_streams(self, pdf_filename):
+    def extract_pdf_vector_streams(self, pdf_filename, page_number=1, page_count=1):
+        if page_count and page_count > 1:
+            return ''
+
         with open(pdf_filename, 'rb') as pdf_file:
             pdf_data = pdf_file.read()
 
@@ -107,8 +110,23 @@ class PDFGeometryBuilder:
 
         return decompressed
 
-    def parse_vector_pdf(self, pdf_filename):
-        pdf_content = self.extract_pdf_vector_streams(pdf_filename)
+    def parse_vector_pdf(self, pdf_filename, page_number=1, page_count=1):
+        if page_count and page_count > 1:
+            return {
+                'success': False,
+                'solid_geometry': [],
+                'follow_geometry': [],
+                'warnings': [
+                    'Page-specific vector extraction is not available in the initial PDF as Geometry MVP. '
+                    'Selected page: %s. Operation cancelled to avoid processing the full multi-page PDF.' % page_number
+                ]
+            }
+
+        pdf_content = self.extract_pdf_vector_streams(
+            pdf_filename=pdf_filename,
+            page_number=page_number,
+            page_count=page_count
+        )
         if not pdf_content.strip():
             return {
                 'success': False,

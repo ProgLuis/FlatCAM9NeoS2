@@ -53,7 +53,34 @@ class ToolPDFGeometry(AppTool):
 
         for filename in filenames:
             if filename:
-                self.app.worker_task.emit({'fcn': self.open_pdf_as_geometry, 'params': [filename]})
+                try:
+                    analysis = analyze_pdf_source(filename)
+                except Exception as e:
+                    self.app.inform.emit('[ERROR_NOTCL] %s: %s' % (_("PDF Content Analyzer failed"), str(e)))
+                    continue
+
+                self.emit_analysis_summary(analysis)
+                pages = analysis.get('pages') or 1
+                page_number = 1
+
+                if pages > 1:
+                    page_number, accepted = QtWidgets.QInputDialog.getInt(
+                        None,
+                        _("PDF Page Selection"),
+                        _("Select PDF page to import:"),
+                        1,
+                        1,
+                        int(pages),
+                        1
+                    )
+                    if not accepted:
+                        self.app.inform.emit('[WARNING_NOTCL] %s.' % _("PDF as Geometry cancelled"))
+                        continue
+
+                self.app.worker_task.emit({
+                    'fcn': self.open_pdf_as_geometry,
+                    'params': [filename, analysis, page_number]
+                })
 
     def emit_analysis_summary(self, analysis):
         source = analysis.get('source') or 'unknown'
@@ -65,29 +92,45 @@ class ToolPDFGeometry(AppTool):
             (source, content, confidence, pages)
         )
 
-    def open_pdf_as_geometry(self, filename):
-        try:
-            analysis = analyze_pdf_source(filename)
-        except Exception as e:
-            self.app.inform.emit('[ERROR_NOTCL] %s: %s' % (_("PDF Content Analyzer failed"), str(e)))
-            return
-
-        self.emit_analysis_summary(analysis)
+    def open_pdf_as_geometry(self, filename, analysis=None, page_number=1):
+        if analysis is None:
+            try:
+                analysis = analyze_pdf_source(filename)
+            except Exception as e:
+                self.app.inform.emit('[ERROR_NOTCL] %s: %s' % (_("PDF Content Analyzer failed"), str(e)))
+                return
+            self.emit_analysis_summary(analysis)
 
         pages = analysis.get('pages')
         if pages and pages > 1:
             self.app.inform.emit(
                 '[WARNING_NOTCL] %s' %
-                _("Multi-page PDF detected. PDF as Geometry processes page content without a page selector in this phase.")
+                _("Multi-page PDF detected. Only the selected page will be processed.")
             )
 
         content_type = analysis.get('content_type')
         outname = filename.split('/')[-1].split('\\')[-1]
 
         if content_type == 'raster':
-            result = PDFRasterVectorizer(app=self.app).vectorize_pdf(filename, page=0)
+            result = PDFRasterVectorizer(app=self.app).vectorize_pdf(filename, page_number=page_number)
             for warning in result.get('warnings', []):
                 self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
+            if result.get('success'):
+                solid_geometry = result.get('solid_geometry')
+
+                def obj_init(geo_obj, app_obj):
+                    geo_obj.solid_geometry = solid_geometry
+                    geo_obj.multigeo = False
+
+                ret = self.app.app_obj.new_object("geometry", outname, obj_init, autoselected=False)
+                if ret == 'fail':
+                    self.app.inform.emit('[ERROR_NOTCL] %s' % _("PDF raster as Geometry import failed."))
+                    return
+
+                self.app.file_opened.emit("geometry", filename)
+                self.app.inform.emit('[success] %s: %s' % (_("Opened"), filename))
+            else:
+                self.app.inform.emit('[ERROR_NOTCL] %s' % _("PDF raster as Geometry import failed."))
             return
 
         if content_type == 'unknown':
@@ -117,7 +160,7 @@ class ToolPDFGeometry(AppTool):
 
         builder = PDFGeometryBuilder(app=self.app)
         with self.app.proc_container.new(_("Importing PDF as Geometry ...")):
-            result = builder.parse_vector_pdf(filename)
+            result = builder.parse_vector_pdf(filename, page_number=page_number, page_count=pages)
 
             for warning in result.get('warnings', []):
                 self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
