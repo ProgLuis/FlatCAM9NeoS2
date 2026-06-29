@@ -19,6 +19,7 @@ from PyQt5 import QtWidgets, QtCore
 from appTool import AppTool
 
 from appParsers.ParsePDF import PdfParser, grace
+from appParsers.PDFContentAnalyzer import analyze_pdf_source
 from shapely.geometry import Point, MultiPolygon, Polygon
 from shapely.ops import unary_union
 
@@ -97,6 +98,60 @@ class ToolPDF(AppTool):
 
         return [geometry]
 
+    def emit_pdf_content_analysis(self, filename):
+        try:
+            analysis = analyze_pdf_source(filename)
+        except Exception as e:
+            self.app.inform.emit(
+                '[WARNING_NOTCL] %s: %s' % (_("PDF Content Analyzer failed"), str(e))
+            )
+            return
+
+        source_names = {
+            'illustrator': 'Adobe Illustrator',
+            'coreldraw': 'CorelDRAW',
+            'proteus': 'Proteus',
+            'unknown': 'Unknown'
+        }
+        content_names = {
+            'vector': 'vector',
+            'raster': 'raster',
+            'mixed': 'mixed',
+            'unknown': 'unknown'
+        }
+
+        source = source_names.get(analysis.get('source'), analysis.get('source') or 'Unknown')
+        content = content_names.get(analysis.get('content_type'), analysis.get('content_type') or 'unknown')
+        confidence = analysis.get('confidence')
+        pages = analysis.get('pages')
+
+        summary = "PDF Content Analyzer: Source: %s; Content: %s; Confidence: %.2f; Pages: %s" % (
+            source, content, confidence if confidence is not None else 0.0, pages if pages is not None else 'unknown'
+        )
+        self.app.inform.emit(summary)
+
+        if pages and pages > 1:
+            self.app.inform.emit(
+                '[WARNING_NOTCL] %s' %
+                _("Multi-page PDF detected. The current PDF import tool has no page selector yet.")
+            )
+
+        warnings = analysis.get('warnings') or []
+        warning = None
+        for candidate in warnings:
+            if candidate.startswith('Some compressed PDF streams could not be decoded'):
+                continue
+            if candidate.startswith('Transparency resources detected') and content == 'vector':
+                continue
+            warning = candidate
+            break
+        if warning:
+            self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
+
+        recommendations = analysis.get('recommendations') or []
+        if recommendations:
+            self.app.inform.emit("PDF Content Analyzer recommendation: %s" % recommendations[0])
+
 
     def run(self, toggle=True):
         self.app.defaults.report_usage("ToolPDF()")
@@ -163,6 +218,8 @@ class ToolPDF(AppTool):
         if self.app.abort_flag:
             # graceful abort requested by the user
             raise grace
+
+        self.emit_pdf_content_analysis(filename)
 
         with self.app.proc_container.new(_("Parsing ...")):
             with open(filename, "rb") as f:
