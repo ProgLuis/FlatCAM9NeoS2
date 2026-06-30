@@ -383,3 +383,37 @@ DXF Drill Recognition is now controlled by the detected profile:
 The DXF system also includes optional first-quadrant normalization for imported Geometry. This operation only translates the geometry when needed; it does not mirror, scale, rotate or change dimensions.
 
 Protected workflows were preserved, including Open Gerber, Open Excellon, SVG as Geometry, SVG as Gerber, CNCJob and exporters.
+
+## 29/06/2026
+
+### PDF Compatibility Suite Completed
+
+FlatCAM 9 Neo S2 now includes a PDF Compatibility Suite for vector PDF workflows.
+
+Supported PDF workflows:
+
+* Import -> PDF as Geometry Object
+* Import -> PDF as Gerber Object
+
+The PDF importer was reorganized so both workflows can evolve independently:
+
+* `ToolPDF.py` remains as the historical compatibility wrapper.
+* `ToolPDFGeometry.py` handles PDF as Geometry Object.
+* `ToolPDFGerber.py` handles PDF as Gerber Object.
+* PDF analysis, source guidance, page selection, preview and crop assistance are now shared through the new PDF helper architecture.
+
+Validated vector PDF sources:
+
+* Adobe Illustrator
+* CorelDRAW
+* Proteus
+
+Raster PDF import remains under investigation. Future work includes raster PDF vectorization and automatic detection of spreadsheet-like or Excel-style table information inside PDF files.
+
+Current CAD/CAM Compatibility Suites:
+
+* SVG Compatibility Suite
+* DXF Compatibility Suite
+* PDF Compatibility Suite
+
+This continues the evolution of FlatCAM 9 Neo S2 toward a more consistent CAD/CAM import platform for common design interchange formats.
