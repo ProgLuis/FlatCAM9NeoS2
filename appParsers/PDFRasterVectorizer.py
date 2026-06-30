@@ -91,7 +91,7 @@ class PDFRasterVectorizer:
         commands.append('Z')
         return ' '.join(commands)
 
-    def vectorize_pdf(self, pdf_filename, page_number=1):
+    def vectorize_pdf(self, pdf_filename, page_number=1, crop_rect=None):
         page_index = max(int(page_number) - 1, 0)
         started = time.time()
         available, missing = self.dependency_status()
@@ -152,8 +152,12 @@ class PDFRasterVectorizer:
 
             page = pdf_doc.load_page(page_index)
             page_rect = page.rect
+            clip = None
+            if crop_rect is not None:
+                clip = fitz.Rect(*crop_rect)
+                page_rect = clip
             matrix = fitz.Matrix(2.0, 2.0)
-            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            pixmap = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
             stages['pymupdf'] = True
 
             mode = 'RGB' if pixmap.n >= 3 else 'L'

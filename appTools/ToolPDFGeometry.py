@@ -9,6 +9,8 @@ from appTool import AppTool
 from appParsers.PDFContentAnalyzer import analyze_pdf_source
 from appParsers.PDFGeometryBuilder import PDFGeometryBuilder
 from appParsers.PDFRasterVectorizer import PDFRasterVectorizer
+from appParsers.PDFSourceAdvisor import advise_pdf_source
+from appTools.PDFImportAssistant import PDFImportAssistantDialog
 
 import gettext
 import appTranslation as fcTranslate
@@ -60,26 +62,27 @@ class ToolPDFGeometry(AppTool):
                     continue
 
                 self.emit_analysis_summary(analysis)
-                pages = analysis.get('pages') or 1
-                page_number = 1
+                try:
+                    advisor = advise_pdf_source(analysis)
+                except Exception:
+                    advisor = {}
 
-                if pages > 1:
-                    page_number, accepted = QtWidgets.QInputDialog.getInt(
-                        None,
-                        _("PDF Page Selection"),
-                        _("Select PDF page to import:"),
-                        1,
-                        1,
-                        int(pages),
-                        1
-                    )
-                    if not accepted:
-                        self.app.inform.emit('[WARNING_NOTCL] %s.' % _("PDF as Geometry cancelled"))
-                        continue
+                assistant = PDFImportAssistantDialog(
+                    app=self.app,
+                    filename=filename,
+                    analysis=analysis,
+                    advisor=advisor
+                )
+                if assistant.exec_() != QtWidgets.QDialog.Accepted:
+                    self.app.inform.emit('[WARNING_NOTCL] %s.' % _("PDF as Geometry cancelled"))
+                    continue
+
+                page_number = assistant.page_number
+                crop_rect = assistant.crop_rect
 
                 self.app.worker_task.emit({
                     'fcn': self.open_pdf_as_geometry,
-                    'params': [filename, analysis, page_number]
+                    'params': [filename, analysis, page_number, crop_rect]
                 })
 
     def emit_analysis_summary(self, analysis):
@@ -91,8 +94,13 @@ class ToolPDFGeometry(AppTool):
             "PDF Content Analyzer: Source: %s; Content: %s; Confidence: %.2f; Pages: %s" %
             (source, content, confidence, pages)
         )
+        try:
+            advice = advise_pdf_source(analysis)
+            self.app.inform.emit(advice.get('message'))
+        except Exception:
+            pass
 
-    def open_pdf_as_geometry(self, filename, analysis=None, page_number=1):
+    def open_pdf_as_geometry(self, filename, analysis=None, page_number=1, crop_rect=None):
         if analysis is None:
             try:
                 analysis = analyze_pdf_source(filename)
@@ -112,7 +120,9 @@ class ToolPDFGeometry(AppTool):
         outname = filename.split('/')[-1].split('\\')[-1]
 
         if content_type == 'raster':
-            result = PDFRasterVectorizer(app=self.app).vectorize_pdf(filename, page_number=page_number)
+            result = PDFRasterVectorizer(app=self.app).vectorize_pdf(
+                filename, page_number=page_number, crop_rect=crop_rect
+            )
             for warning in result.get('warnings', []):
                 self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
             if result.get('success'):
@@ -146,21 +156,11 @@ class ToolPDFGeometry(AppTool):
                 _("Mixed vector/raster PDF detected. Only vector geometry will be imported in this phase.")
             )
 
-        vector_ops = analysis.get('vector_operator_counts') or {}
-        vector_complexity = sum(
-            vector_ops.get(op, 0)
-            for op in ('m', 'l', 'c', 'v', 'y', 'h', 're', 'S', 's', 'f', 'F', 'B', 'b', 'W')
-        )
-        if vector_complexity > 15000:
-            self.app.inform.emit(
-                '[WARNING_NOTCL] %s' %
-                _("PDF vector content is too complex for the initial PDF as Geometry MVP. Operation cancelled.")
-            )
-            return
-
         builder = PDFGeometryBuilder(app=self.app)
         with self.app.proc_container.new(_("Importing PDF as Geometry ...")):
-            result = builder.parse_vector_pdf(filename, page_number=page_number, page_count=pages)
+            result = builder.parse_vector_pdf(
+                filename, page_number=page_number, page_count=pages, crop_rect=crop_rect
+            )
 
             for warning in result.get('warnings', []):
                 self.app.inform.emit('[WARNING_NOTCL] %s' % warning)
