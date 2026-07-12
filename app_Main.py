@@ -2065,15 +2065,16 @@ class App(QtCore.QObject):
         self.properties_tool.install(icon=QtGui.QIcon(self.resource_location + '/properties32.png'),
                                      pos=self.ui.menuoptions)
 
+        self.pdf_geometry_tool = ToolPDFGeometry(self)
+        self.pdf_geometry_tool.install(icon=QtGui.QIcon(self.resource_location + '/pdf32.png'),
+                                       pos=self.ui.menufileimport)
+                                       
         self.pdf_tool = ToolPDF(self)
         self.pdf_tool.install(icon=QtGui.QIcon(self.resource_location + '/pdf32.png'),
                               pos=self.ui.menufileimport,
                               separator=True)
 
-        self.pdf_geometry_tool = ToolPDFGeometry(self)
-        self.pdf_geometry_tool.install(icon=QtGui.QIcon(self.resource_location + '/pdf32.png'),
-                                       pos=self.ui.menufileimport,
-                                       separator=True)
+        
 
         self.image_tool = ToolImage(self)
         self.image_tool.install(icon=QtGui.QIcon(self.resource_location + '/image32.png'),
