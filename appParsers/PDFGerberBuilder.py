@@ -8,6 +8,12 @@ import zlib
 
 from appParsers.ParsePDF import PdfParser
 from appParsers.PDFGeometryBuilder import PDFGeometryBuilder
+from appParsers.PDFImportLimits import (
+    PDF_WARN_VECTOR_OPS,
+    PDF_MAX_VECTOR_OPS,
+    PDF_HIGH_COMPLEXITY_MESSAGE,
+    PDF_TOO_COMPLEX_MESSAGE
+)
 
 
 class PDFGerberBuilder:
@@ -24,7 +30,7 @@ class PDFGerberBuilder:
     )
     pdf_ops = [' m', ' l', ' c', ' re', ' S', ' s', ' f', ' F', ' B', ' b', ' q', ' Q', ' cm']
     vector_ops = [' m', ' l', ' c', ' re', ' S', ' s', ' f', ' F', ' B', ' b']
-    max_vector_ops = 4000
+    max_vector_ops = PDF_MAX_VECTOR_OPS
 
     def __init__(self, app):
         self.app = app
@@ -99,9 +105,8 @@ class PDFGerberBuilder:
                 'vector_ops': vector_ops,
                 'warning': (
                     'The selected PDF crop contains approximately %s vector operations. '
-                    'This exceeds the current safe PDF as Gerber processing limit (%s operations). '
-                    'Use PDF as Geometry Object for analysis/crop, simplify the PDF, or export native Gerber/Excellon.'
-                ) % (vector_ops, self.max_vector_ops)
+                    '%s'
+                ) % (vector_ops, PDF_TOO_COMPLEX_MESSAGE)
             }
 
         geometry_builder = PDFGeometryBuilder(app=self.app)
@@ -143,7 +148,7 @@ class PDFGerberBuilder:
             },
             'pdf_content': '',
             'vector_ops': vector_ops,
-            'warning': None
+            'warning': PDF_HIGH_COMPLEXITY_MESSAGE if vector_ops > PDF_WARN_VECTOR_OPS else None
         }
 
     def parse_file(self, pdf_filename, page_number=1, crop_rect=None):
@@ -191,9 +196,8 @@ class PDFGerberBuilder:
                 'vector_ops': vector_ops,
                 'warning': (
                     'The selected PDF page contains approximately %s vector operations. '
-                    'This exceeds the current safe PDF as Gerber processing limit (%s operations). '
-                    'Use PDF as Geometry Object for analysis/crop, simplify the PDF, or export native Gerber/Excellon.'
-                ) % (vector_ops, self.max_vector_ops)
+                    '%s'
+                ) % (vector_ops, PDF_TOO_COMPLEX_MESSAGE)
             }
 
         parsed_pdf = self.parser.parse_pdf(pdf_content=pdf_content)
@@ -224,5 +228,5 @@ class PDFGerberBuilder:
             'parsed_pdf': parsed_pdf,
             'pdf_content': pdf_content,
             'vector_ops': vector_ops,
-            'warning': None
+            'warning': PDF_HIGH_COMPLEXITY_MESSAGE if vector_ops > PDF_WARN_VECTOR_OPS else None
         }

@@ -3,6 +3,276 @@ FlatCAM 9 Neo S2 (Shapely 2.x Friendly Edition)
 Maintainer: Luis Enrique Yacupoma Aguirre
 =================================================
 
+11.07.2026
+
+Advanced PDF, Drill Recognition and Excellon Tools
+
+Milestone summary:
+
+* Extended the PDF Compatibility Suite introduced on 29.06.2026.
+* Added specialized workflows for Excellon drill recognition, assisted drill declaration and Excellon merging.
+* Preserved the existing stable workflows:
+  * SVG as Geometry Object.
+  * SVG as Gerber Object.
+  * DXF as Geometry Object.
+  * DXF as Gerber Object.
+  * Open Gerber.
+  * Open Excellon.
+  * CNCJob generation.
+  * PDF as Geometry Object.
+  * PDF as Gerber Object.
+* Kept the PDF Geometry and PDF Gerber branches architecturally separated.
+
+PDF Import Assistant and UI:
+
+* Extended `appTools/PDFImportAssistant.py` as the shared user-facing PDF preparation dialog.
+* Confirmed support for:
+  * PDF Content Analyzer results.
+  * PDF Source Advisor guidance.
+  * Page selection.
+  * Preview rendering.
+  * Interactive crop.
+  * Full Page import.
+  * Flip Horizontal.
+  * Flip Vertical.
+  * Estimated vector operation counts.
+  * White circular PDF drill estimates when enabled by the caller.
+* Stabilized the preview panel behavior so crop selection does not shift or visually displace the displayed page.
+* Added guidance for vector, raster, mixed and unknown PDF sources.
+* Added drill estimate reporting for:
+  * Candidate count.
+  * Tool count.
+  * Diameter groups.
+* The Assistant remains informational and does not modify original PDF files.
+
+PDF complexity limits:
+
+* Added shared PDF complexity constants in `appParsers/PDFImportLimits.py`:
+  * `PDF_WARN_VECTOR_OPS = 4000`.
+  * `PDF_MAX_VECTOR_OPS = 6000`.
+* Applied a consistent policy to PDF import workflows:
+  * 0 to 4000 vector operations: normal import.
+  * 4001 to 6000 vector operations: warning and user guidance.
+  * More than 6000 vector operations: safe cancellation.
+* User guidance recommends reducing the crop area, exporting only PCB layers or simplifying PDF artwork.
+* The same limits are consumed by:
+  * `appTools/PDFImportAssistant.py`.
+  * `appParsers/PDFGeometryBuilder.py`.
+  * `appParsers/PDFGerberBuilder.py`.
+
+PDF flip transforms:
+
+* Added controlled PDF import transforms through `appParsers/PDFImportTransform.py`.
+* Added Flip Horizontal and Flip Vertical options in the PDF Import Assistant.
+* Both options are disabled by default.
+* Transform origin is calculated from:
+  * The selected crop center when a crop exists.
+  * The selected page center when using Full Page.
+* The transform is applied after PDF coordinates are converted into FlatCAM millimeter geometry.
+* The implementation supports compatible vector Geometry output and drill coordinates.
+* Raster PDF behavior remains outside the automatic drill recognition scope.
+
+Modern PDF Geometry parsing:
+
+* Extended `appParsers/PDFGeometryBuilder.py` for direct PyMuPDF drawing extraction.
+* Validated the modern vector path with common software-generated PDF sources:
+  * Adobe Illustrator.
+  * CorelDRAW.
+  * Proteus.
+* Uses `page.get_drawings()` for reliable vector access when available.
+* Builds Shapely Geometry from supported PDF drawing items.
+* Keeps a safe fallback to the historical `ParsePDF.py` path when needed.
+* Improved full page and cropped imports.
+* Reduced duplicated Geometry from closed stroked shapes.
+* Consolidated fill and stroke results at drawing/subpath level.
+* Buffers the complete path when appropriate instead of buffering unrelated fragments.
+* Avoids unnecessary centerline follow geometry when the stroke is already materialized as solid Geometry.
+* Prevents the visible triple-border problem observed with some closed PDF vector shapes.
+* Preserves dimensions and bounds during vector import.
+* Keeps PDF as Geometry Object independent from PDF as Gerber Object.
+
+PDF subpath classification:
+
+* Added `appParsers/PDFSubpathUtils.py`.
+* Added subpath-aware reconstruction for complex PDF drawings.
+* Tracks:
+  * `drawing_index`.
+  * `subpath_index`.
+* Handles PDF producers that place multiple closed contours in a single drawing.
+* Supports classification of:
+  * Accepted drill subpaths.
+  * Preserved circular subpaths.
+  * Normal subpaths.
+* Preserved circular subpaths are retained as Geometry when they are not accepted as drills.
+* Closed preserved circles remain available for assisted conversion by the Extract Drills Tool.
+* This behavior is especially important for CorelDRAW-style grouped vector output.
+
+Automatic white PDF drill detection:
+
+* Added `appParsers/PDFWhiteDrillDetector.py`.
+* Added conservative recognition of white circular vector geometry as possible Excellon drill data.
+* Detection uses PyMuPDF `page.get_drawings()`.
+* Criteria include:
+  * Filled vector drawing/subpath.
+  * White fill with tolerance.
+  * Real circular geometry.
+  * Approximately square bounding box.
+  * Diameter between 0.2 mm and 6.0 mm.
+  * Center inside the selected crop when crop is used.
+* Ellipses are rejected.
+* Raster PDF content is not automatically detected as drill data.
+* Mixed PDF content is treated conservatively and vector drill candidates are reported with warnings when applicable.
+* Results are grouped by diameter.
+* PDF as Geometry Object can optionally create a separate Excellon Object named with the `_drills` suffix.
+* Accepted drill Geometry can be excluded from the main Geometry output.
+* Rejected or preserved circles remain available as Geometry.
+* The behavior is intentionally conservative and requires user verification before machining.
+
+Manual Geometry circumference conversion:
+
+* Expanded `appTools/ToolExtractDrills.py`.
+* Reorganized the tool into two sections:
+  * `A) Convert Gerber Objects to Drills`.
+  * `B) Convert Geometry Circumferences to Drills`.
+* Added independent resets:
+  * `Reset Gerber Tool`.
+  * `Reset Geometry Tool`.
+* Added Geometry Object selection through the ObjectCollection model.
+* Added two diameter modes:
+  * `Automatic`, using the measured circumference diameter.
+  * `Manual`, allowing user-defined diameters from 0.2 mm to 15.0 mm.
+* Added Shapely-based recognition of compatible circular Geometry:
+  * Closed LineString.
+  * LinearRing.
+  * Polygon exterior boundary.
+* Validates:
+  * Closed geometry.
+  * Bounds.
+  * Width/height relationship.
+  * Length approximately matching `pi*d`.
+  * Circularity.
+* Rejects non-circular or elliptical candidates.
+* Allows individual canvas selection.
+* Stores selections temporarily.
+* Groups pending drills by diameter.
+* Does not modify Geometry during selection.
+* Uses `self.app.tool_shapes` for temporary highlight overlays.
+* Uses the application selection color through `global_sel_draw_color`.
+* Added:
+  * `Selected circumferences`.
+  * `Tools`.
+  * `Undo Last Selection`.
+  * `Clear Selection`.
+  * `Remove original geometry circumferences after conversion`.
+  * `Generate Excellon`.
+* `Undo Last Selection` removes only the last pending selection.
+* `Clear Selection` clears only the temporary selections owned by this tool.
+* The tool avoids destructive global clearing of unrelated tool shapes.
+* Original Geometry is removed only after the Excellon Object is created successfully and the removal checkbox is enabled.
+* If Excellon creation fails, the original Geometry and the temporary selection are preserved so the user can retry.
+* Removal handles matching references in:
+  * `solid_geometry`.
+  * `follow_geometry`.
+* Creates one Excellon Object grouped by diameter.
+* The workflow can assist Geometry imported from:
+  * PDF.
+  * SVG.
+  * DXF.
+  * Manual editing.
+
+Merge Excellon Objects:
+
+* Added a new independent tool:
+  * `appTools/ToolMergeExcellon.py`.
+* Registered the tool in:
+  * `appTools/__init__.py`.
+  * `app_Main.py`.
+  * `appGUI/MainGUI.py`.
+* Added the tool below Extract Drills in the Tool menu.
+* Added a dedicated toolbar button immediately to the right of Extract Drills.
+* Added the UI:
+  * `Selected Excellon Objects`.
+  * `Merge Selected Excellon Objects`.
+  * `Close`.
+  * Ctrl + Click selection guidance.
+* Reads multi-selection directly from the Project panel.
+* Requires two or more Excellon Objects.
+* Rejects any selected object that is not an Excellon Object.
+* Displays a read-only list of selected Excellon Objects.
+* Keeps all source Excellon Objects intact.
+* Rejects slots in this first version.
+* Detects duplicate drill centers.
+* Detects physically overlapping drills using center distance and drill radii.
+* Tangent drills are allowed within numeric tolerance.
+* Rebuilds the complete tools table by real diameter.
+* Does not copy original tool IDs.
+* Calls `create_geometry()` on the new Excellon Object.
+* Creates the result as `merged_excellon`.
+* Uses unique names for repeated merges.
+* Adds the result to Project -> Excellon.
+* The tool remains open after a successful merge.
+* The Close button removes only this tool widget from `tool_scroll_area`.
+* Close does not collapse the splitter.
+* Project and Properties remain visible after Close.
+* Added a dedicated icon:
+  * `assets/resources/merge_excellon_objects.png`.
+  * `assets/resources/dark_resources/merge_excellon_objects.png`.
+* The icon is visually related to Extract Drills and uses the light/dark resource structure.
+
+Validated workflows:
+
+* PDF Illustrator
+  -> PDF as Geometry Object
+  -> automatic white drill detection
+  -> optional Excellon Object.
+* PDF CorelDRAW multipage
+  -> page selection
+  -> crop
+  -> subpath preservation
+  -> Geometry Object
+  -> manual circumference conversion.
+* PDF Proteus
+  -> vector Geometry Object
+  -> drill extraction
+  -> Excellon Object.
+* Geometry from PDF, SVG, DXF or manual editing
+  -> Convert Geometry Circumferences to Drills
+  -> Automatic or Manual diameter
+  -> Generate Excellon.
+* Multiple Excellon Objects
+  -> Ctrl + Click selection
+  -> overlap validation
+  -> rebuilt tools table
+  -> `merged_excellon`.
+
+Safety and non-destructive behavior:
+
+* Original PDF files are never modified.
+* Prepared temporary PDF inputs are cleaned when used by the PDF Gerber workflow.
+* Geometry is not modified during manual circumference selection.
+* Accepted white PDF drills can be separated as Excellon drill data.
+* Rejected or preserved PDF circumferences remain available as Geometry.
+* Manual Geometry cleanup happens only after successful Excellon creation.
+* Original Excellon Objects remain intact during merge.
+* Failed operations do not intentionally produce partial Excellon results.
+* Project and Properties panels are preserved by the Merge Excellon Objects Close button.
+
+Limitations and user guidance:
+
+* Automatic PDF drill recognition depends on vector PDF semantics.
+* Raster PDF drill recognition is not automatic in this milestone.
+* Geometry output does not preserve full PDF color/fill semantic information.
+* Geometry circumference conversion is assisted and requires user selection.
+* Merge Excellon Objects rejects slots in this first version.
+* Native Gerber and Excellon files remain the preferred manufacturing workflow when available.
+* Users should verify:
+  * Dimensions.
+  * Drill diameters.
+  * Drill locations.
+  * Isolation Geometry.
+  * CNCJob output.
+  * Final machine setup.
+
 29.06.2026
 
 PDF Compatibility Suite Completed

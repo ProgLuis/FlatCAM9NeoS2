@@ -6,6 +6,13 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from appParsers.PDFGeometryBuilder import PDFGeometryBuilder
+from appParsers.PDFImportLimits import (
+    PDF_WARN_VECTOR_OPS,
+    PDF_MAX_VECTOR_OPS,
+    PDF_HIGH_COMPLEXITY_MESSAGE,
+    PDF_TOO_COMPLEX_MESSAGE
+)
+from appParsers.PDFWhiteDrillDetector import detect_white_pdf_drills
 
 
 class PDFPreviewLabel(QtWidgets.QLabel):
@@ -93,7 +100,7 @@ class PDFPreviewLabel(QtWidgets.QLabel):
 
 
 class PDFImportAssistantDialog(QtWidgets.QDialog):
-    def __init__(self, app, filename, analysis, advisor, parent=None):
+    def __init__(self, app, filename, analysis, advisor, parent=None, enable_white_drill_extraction=False):
         super().__init__(parent)
         self.app = app
         self.filename = filename
@@ -104,12 +111,15 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
         self.page_rect = None
         self.render_zoom = 1.5
         self.crop_rect = None
+        self.white_drill_result = None
+        self.enable_white_drill_extraction = bool(enable_white_drill_extraction)
         self._updating = False
 
         self.setWindowTitle('PDF Import Assistant')
         self.resize(980, 680)
 
         self.preview = PDFPreviewLabel()
+        self.preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.preview.cropChanged.connect(self.update_complexity)
 
         self.page_spin = QtWidgets.QSpinBox()
@@ -124,13 +134,43 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
         self.info_label = QtWidgets.QLabel()
         self.info_label.setWordWrap(True)
         self.info_label.setMinimumWidth(310)
+        self.info_label.setMaximumWidth(330)
+        self.info_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum)
 
         self.complexity_bar = QtWidgets.QProgressBar()
         self.complexity_bar.setMinimum(0)
-        self.complexity_bar.setMaximum(PDFGeometryBuilder.MAX_VECTOR_OPS)
+        self.complexity_bar.setMaximum(PDF_MAX_VECTOR_OPS)
 
         self.status_label = QtWidgets.QLabel()
         self.status_label.setWordWrap(True)
+        self.status_label.setMaximumWidth(330)
+        self.status_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum)
+
+        self.flip_horizontal_cb = QtWidgets.QCheckBox('Flip Horizontal before import')
+        self.flip_horizontal_cb.setChecked(False)
+        self.flip_horizontal_cb.setVisible(self.flip_controls_available())
+
+        self.flip_vertical_cb = QtWidgets.QCheckBox('Flip Vertical before import')
+        self.flip_vertical_cb.setChecked(False)
+        self.flip_vertical_cb.setVisible(self.flip_controls_available())
+
+        self.flip_info_label = QtWidgets.QLabel('Flip options are applied to the imported result.')
+        self.flip_info_label.setWordWrap(True)
+        self.flip_info_label.setMaximumWidth(330)
+        self.flip_info_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum)
+        self.flip_info_label.setVisible(self.flip_controls_available())
+
+        self.extract_white_drills_cb = QtWidgets.QCheckBox(
+            'Extract white circular PDF geometry as Excellon drills'
+        )
+        self.extract_white_drills_cb.setChecked(False)
+        self.extract_white_drills_cb.setVisible(self.white_drill_controls_available())
+
+        self.white_drill_label = QtWidgets.QLabel()
+        self.white_drill_label.setWordWrap(True)
+        self.white_drill_label.setMaximumWidth(330)
+        self.white_drill_label.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum)
+        self.white_drill_label.setVisible(self.white_drill_controls_available())
 
         button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
@@ -142,23 +182,86 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
         controls.addWidget(self.full_page_btn)
         controls.addStretch()
 
-        side = QtWidgets.QVBoxLayout()
+        side_panel_width = 360
+        side_content_width = 330
+        self.side_panel = QtWidgets.QWidget()
+        self.side_panel.setFixedWidth(side_panel_width)
+        self.side_panel.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+
+        self.side_scroll = QtWidgets.QScrollArea()
+        self.side_scroll.setWidgetResizable(True)
+        self.side_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.side_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.side_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.side_scroll.setFixedWidth(side_panel_width)
+
+        self.side_scroll_content = QtWidgets.QWidget()
+        self.side_scroll_content.setMinimumWidth(side_content_width)
+        self.side_scroll_content.setMaximumWidth(side_content_width)
+        self.side_scroll_content.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.MinimumExpanding)
+
+        side = QtWidgets.QVBoxLayout(self.side_scroll_content)
         side.addWidget(self.info_label)
         side.addWidget(QtWidgets.QLabel('Estimated Complexity:'))
         side.addWidget(self.complexity_bar)
         side.addWidget(self.status_label)
+        side.addWidget(self.flip_horizontal_cb)
+        side.addWidget(self.flip_vertical_cb)
+        side.addWidget(self.flip_info_label)
+        side.addWidget(self.extract_white_drills_cb)
+        side.addWidget(self.white_drill_label)
         side.addStretch()
-        side.addWidget(button_box)
+        self.side_scroll.setWidget(self.side_scroll_content)
+
+        side_outer = QtWidgets.QVBoxLayout(self.side_panel)
+        side_outer.setContentsMargins(0, 0, 0, 0)
+        side_outer.addWidget(self.side_scroll, 1)
+        side_outer.addWidget(button_box)
 
         main = QtWidgets.QHBoxLayout()
         left = QtWidgets.QVBoxLayout()
         left.addLayout(controls)
         left.addWidget(self.preview, 1)
         main.addLayout(left, 1)
-        main.addLayout(side)
+        main.addWidget(self.side_panel)
         self.setLayout(main)
 
         self.render_page()
+
+    def flip_controls_available(self):
+        content_type = (self.analysis.get('content_type') or 'unknown').lower()
+        return content_type in ['vector', 'mixed']
+
+    def white_drill_controls_available(self):
+        if not self.enable_white_drill_extraction:
+            return False
+
+        content_type = (self.analysis.get('content_type') or 'unknown').lower()
+        return content_type in ['vector', 'mixed']
+
+    def drill_object_name(self):
+        base_name = self.filename.split('/')[-1].split('\\')[-1].rpartition('.')[0]
+        if not base_name:
+            base_name = self.filename.split('/')[-1].split('\\')[-1]
+        return base_name + '_drills'
+
+    @property
+    def extract_white_drills(self):
+        if not self.white_drill_controls_available():
+            return False
+        return self.extract_white_drills_cb.isChecked()
+
+    @property
+    def flip_horizontal(self):
+        if not self.flip_controls_available():
+            return False
+        return self.flip_horizontal_cb.isChecked()
+
+    @property
+    def flip_vertical(self):
+        if not self.flip_controls_available():
+            return False
+        return self.flip_vertical_cb.isChecked()
 
     def on_page_changed(self, value):
         if self._updating:
@@ -229,16 +332,19 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
             area_text = '%.3f x %.3f mm' % (width_mm, height_mm)
 
         complexity = self.estimate_complexity(content_type)
-        limit = PDFGeometryBuilder.MAX_VECTOR_OPS
+        warning_limit = PDF_WARN_VECTOR_OPS
+        limit = PDF_MAX_VECTOR_OPS
         self.complexity_bar.setMaximum(limit)
         self.complexity_bar.setValue(min(complexity, limit))
 
-        if complexity <= int(limit * 0.35):
+        if complexity <= int(warning_limit * 0.35):
             status = 'Safe to import'
-        elif complexity <= int(limit * 0.70):
+        elif complexity <= int(warning_limit * 0.70):
             status = 'Medium complexity'
-        elif complexity <= limit:
+        elif complexity <= warning_limit:
             status = 'High complexity'
+        elif complexity <= limit:
+            status = 'High complexity warning'
         else:
             status = 'Too Complex - reduce crop area or simplify the PDF'
 
@@ -250,16 +356,85 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
         recommendations = ''
         if complexity > limit:
             recommendations = (
+                '\n%s\n' % PDF_TOO_COMPLEX_MESSAGE +
                 '\nRecommendations:\n'
                 '- Reduce crop area.\n'
                 '- Remove decorative artwork.\n'
                 '- Export only the PCB layer.\n'
                 '- Simplify the PDF.'
             )
+        elif complexity > warning_limit:
+            recommendations = '\n%s' % PDF_HIGH_COMPLEXITY_MESSAGE
         self.status_label.setText(
             'Estimated Vector Operations: %s / %s\nStatus: %s%s' %
             (complexity, limit, status, recommendations)
         )
+        visible_flip = self.flip_controls_available()
+        self.flip_horizontal_cb.setVisible(visible_flip)
+        self.flip_vertical_cb.setVisible(visible_flip)
+        self.flip_info_label.setVisible(visible_flip)
+        self.update_white_drill_estimate(content_type)
+
+    def update_white_drill_estimate(self, content_type):
+        if not self.white_drill_controls_available():
+            self.white_drill_result = None
+            self.extract_white_drills_cb.setVisible(False)
+            self.white_drill_label.setVisible(False)
+            return
+
+        self.extract_white_drills_cb.setVisible(True)
+        self.white_drill_label.setVisible(True)
+
+        content_type = (content_type or 'unknown').lower()
+        if content_type not in ['vector', 'mixed']:
+            self.white_drill_result = None
+            self.white_drill_label.setText('')
+            return
+
+        try:
+            self.white_drill_result = detect_white_pdf_drills(
+                self.filename,
+                page_number=self.page_number,
+                crop_rect=self.crop_rect
+            )
+        except Exception as e:
+            self.white_drill_result = None
+            self.white_drill_label.setText(
+                'Estimated Excellon Extraction\n\n'
+                'White drill estimation failed: %s' % str(e)
+            )
+            return
+
+        candidate_count = self.white_drill_result.get('candidate_count', 0) if self.white_drill_result else 0
+        if candidate_count <= 0:
+            self.white_drill_label.setText(
+                'Estimated Excellon Extraction\n\n'
+                'Estimated Excellon Object:\n%s\n\n'
+                'No white circular drill candidates detected.' % self.drill_object_name()
+            )
+            return
+
+        tools = self.white_drill_result.get('tools', {})
+        lines = [
+            'Estimated Excellon Extraction',
+            '',
+            'Estimated Excellon Object:',
+            self.drill_object_name(),
+            '',
+            'Estimated candidates: %d' % candidate_count,
+            'Estimated tools: %d' % len(tools),
+            '',
+            'Diameters:'
+        ]
+
+        for diameter_key in sorted(tools, key=lambda key: float(key)):
+            lines.append('* %.4f mm (%d)' % (float(diameter_key), len(tools[diameter_key])))
+
+        source = (self.analysis.get('source') or '').lower()
+        if content_type == 'mixed' or source in ['coreldraw', 'corel']:
+            lines += ['', 'WARNING: Verify detected drills before manufacturing.']
+
+        self.white_drill_label.setText('\n'.join(lines))
 
     def estimate_complexity(self, content_type):
         try:
@@ -282,6 +457,6 @@ class PDFImportAssistantDialog(QtWidgets.QDialog):
                 finally:
                     doc.close()
         except Exception:
-            return PDFGeometryBuilder.MAX_VECTOR_OPS + 1
+            return PDF_MAX_VECTOR_OPS + 1
 
         return 0

@@ -1041,6 +1041,8 @@ class MainGUI(QtWidgets.QMainWindow):
             QtGui.QIcon(self.app.resource_location + '/align32.png'), _("Align Objects Tool"))
         self.extract_btn = self.toolbartools.addAction(
             QtGui.QIcon(self.app.resource_location + '/extract_drill32.png'), _("Extract Drills Tool"))
+        self.merge_excellon_btn = self.toolbartools.addAction(
+            QtGui.QIcon(self.app.resource_location + '/merge_excellon_objects.png'), _("Merge Excellon Objects"))
 
         self.cutout_btn = self.toolbartools.addAction(
             QtGui.QIcon(self.app.resource_location + '/cut16_bis.png'), _("Cutout Tool"))
@@ -2209,6 +2211,8 @@ class MainGUI(QtWidgets.QMainWindow):
             QtGui.QIcon(self.app.resource_location + '/align32.png'), _("Align Objects Tool"))
         self.extract_btn = self.toolbartools.addAction(
             QtGui.QIcon(self.app.resource_location + '/extract_drill32.png'), _("Extract Drills Tool"))
+        self.merge_excellon_btn = self.toolbartools.addAction(
+            QtGui.QIcon(self.app.resource_location + '/merge_excellon_objects.png'), _("Merge Excellon Objects"))
 
         self.cutout_btn = self.toolbartools.addAction(
             QtGui.QIcon(self.app.resource_location + '/cut16_bis.png'), _("Cutout Tool"))

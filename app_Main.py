@@ -1064,6 +1064,7 @@ class App(QtCore.QObject):
         self.copper_thieving_tool = None
         self.fiducial_tool = None
         self.edrills_tool = None
+        self.merge_excellon_tool = None
         self.align_objects_tool = None
         self.punch_tool = None
         self.invert_tool = None
@@ -1978,7 +1979,11 @@ class App(QtCore.QObject):
         self.align_objects_tool.install(icon=QtGui.QIcon(self.resource_location + '/align16.png'), separator=False)
 
         self.edrills_tool = ToolExtractDrills(self)
-        self.edrills_tool.install(icon=QtGui.QIcon(self.resource_location + '/drill16.png'), separator=True)
+        self.edrills_tool.install(icon=QtGui.QIcon(self.resource_location + '/drill16.png'), separator=False)
+
+        self.merge_excellon_tool = ToolMergeExcellon(self)
+        self.merge_excellon_tool.install(icon=QtGui.QIcon(self.resource_location + '/merge_excellon_objects.png'),
+                                         separator=True)
 
         self.panelize_tool = Panelize(self)
         self.panelize_tool.install(icon=QtGui.QIcon(self.resource_location + '/panelize16.png'))
@@ -2143,6 +2148,7 @@ class App(QtCore.QObject):
         self.ui.cal_btn.triggered.connect(lambda: self.cal_exc_tool.run(toggle=True))
         self.ui.align_btn.triggered.connect(lambda: self.align_objects_tool.run(toggle=True))
         self.ui.extract_btn.triggered.connect(lambda: self.edrills_tool.run(toggle=True))
+        self.ui.merge_excellon_btn.triggered.connect(lambda: self.merge_excellon_tool.run(toggle=True))
 
         self.ui.cutout_btn.triggered.connect(lambda: self.cutout_tool.run(toggle=True))
         self.ui.ncc_btn.triggered.connect(lambda: self.ncclear_tool.run(toggle=True))

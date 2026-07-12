@@ -14,6 +14,14 @@ from shapely.geometry import LineString, Polygon, MultiPolygon, box
 from shapely.ops import polygonize, unary_union
 
 from appParsers.ParsePDF import PdfParser
+from appParsers.PDFSourceAdvisor import advise_pdf_source
+from appParsers.PDFImportLimits import (
+    PDF_WARN_VECTOR_OPS,
+    PDF_MAX_VECTOR_OPS,
+    PDF_HIGH_COMPLEXITY_MESSAGE,
+    PDF_TOO_COMPLEX_MESSAGE
+)
+from appParsers.PDFSubpathUtils import reconstruct_pdf_subpaths
 
 
 class PDFGeometryBuilder:
@@ -25,12 +33,32 @@ class PDFGeometryBuilder:
     representation and extracts Geometry Object friendly Shapely geometry.
     """
 
-    MAX_VECTOR_OPS = 4000
+    MAX_VECTOR_OPS = PDF_MAX_VECTOR_OPS
 
     def __init__(self, app):
         self.app = app
         self.parser = PdfParser(app=self.app)
         self.max_vector_ops = self.MAX_VECTOR_OPS
+
+    @staticmethod
+    def modern_source_from_advisor(analysis):
+        analysis = analysis or {}
+        content_type = (analysis.get('content_type') or '').strip().lower()
+        if content_type not in ['vector', 'mixed']:
+            return False, 'unknown'
+
+        source = (analysis.get('source') or '').strip().lower()
+        try:
+            advisor = advise_pdf_source(analysis)
+            advisor_source = (advisor.get('source') or '').strip().lower()
+            if advisor_source:
+                source = advisor_source
+        except Exception:
+            pass
+
+        normalized_source = source.replace(' ', '').replace('adobe', '')
+        modern_sources = ['illustrator', 'coreldraw', 'corel', 'proteus']
+        return normalized_source in modern_sources, source or 'unknown'
 
     @staticmethod
     def iter_geom(geometry):
@@ -170,15 +198,19 @@ class PDFGeometryBuilder:
 
         return '\r\n'.join(commands) + '\r\n'
 
-    def extract_pdf_drawings_for_page(self, pdf_filename, page_number=1, crop_rect=None):
+    def extract_pdf_drawings_for_page(self, pdf_filename, page_number=1, crop_rect=None,
+                                      exclude_drawing_indices=None):
         import fitz
 
+        exclude_drawing_indices = set(exclude_drawing_indices or [])
         doc = fitz.open(pdf_filename)
         try:
             page = doc.load_page(int(page_number or 1) - 1)
             clip = fitz.Rect(*crop_rect) if crop_rect is not None else None
             chunks = []
-            for drawing in page.get_drawings():
+            for index, drawing in enumerate(page.get_drawings()):
+                if index in exclude_drawing_indices:
+                    continue
                 rect = drawing.get('rect')
                 if clip is not None and rect is not None and not fitz.Rect(rect).intersects(clip):
                     continue
@@ -216,9 +248,28 @@ class PDFGeometryBuilder:
         ymax = (float(page_height) - float(rect.y0)) * unit_factor
         return box(xmin, ymin, xmax, ymax)
 
-    def drawings_to_geometry(self, pdf_filename, page_number=1, crop_rect=None):
+    @staticmethod
+    def _subpath_key_set(descriptors):
+        keys = set()
+        for descriptor in descriptors or []:
+            if isinstance(descriptor, (list, tuple)) and len(descriptor) >= 2:
+                keys.add((int(descriptor[0]), int(descriptor[1])))
+                continue
+            if isinstance(descriptor, dict):
+                try:
+                    keys.add((int(descriptor.get('drawing_index')), int(descriptor.get('subpath_index'))))
+                except Exception:
+                    continue
+        return keys
+
+    def drawings_to_geometry(self, pdf_filename, page_number=1, crop_rect=None, exclude_drawing_indices=None,
+                             preserve_circle_indices=None, excluded_subpaths=None, preserved_circle_subpaths=None):
         import fitz
 
+        exclude_drawing_indices = set(exclude_drawing_indices or [])
+        preserve_circle_indices = set(preserve_circle_indices or [])
+        excluded_subpaths = self._subpath_key_set(excluded_subpaths)
+        preserved_circle_subpaths = self._subpath_key_set(preserved_circle_subpaths)
         solid_geometry = []
         follow_geometry = []
         clip = fitz.Rect(*crop_rect) if crop_rect is not None else None
@@ -246,85 +297,52 @@ class PDFGeometryBuilder:
             if crop_rect is not None:
                 crop_box = self.pdf_rect_to_geometry_box(fitz.Rect(*crop_rect), page_height, unit_factor)
 
-            for drawing in page.get_drawings():
+            for index, drawing in enumerate(page.get_drawings()):
+                if index in exclude_drawing_indices:
+                    continue
                 rect = drawing.get('rect')
                 if clip is not None and rect is not None and not fitz.Rect(rect).intersects(clip):
                     continue
 
-                subpaths = []
-                current = []
-                local_follow = []
-
-                def finish_subpath():
-                    if len(current) >= 2:
-                        subpaths.append(list(current))
-                    del current[:]
-
-                def append_points(points):
-                    if not points:
-                        return
-                    if current and current[-1] != points[0]:
-                        finish_subpath()
-                    if not current:
-                        current.extend(points)
-                    else:
-                        current.extend(points[1:])
-
-                for item in drawing.get('items') or []:
-                    op = item[0]
-                    if op == 'l':
-                        segment = [
-                            self.pdf_point_to_geometry(item[1], page_height, unit_factor),
-                            self.pdf_point_to_geometry(item[2], page_height, unit_factor)
-                        ]
-                        append_points(segment)
-                        local_follow.append(LineString(segment))
-                    elif op == 'c':
-                        curve_points = [
-                            (x * unit_factor, (page_height - y) * unit_factor)
-                            for x, y in self._bezier_points(item[1], item[2], item[3], item[4])
-                        ]
-                        append_points(curve_points)
-                        local_follow.append(LineString(curve_points))
-                    elif op == 're':
-                        r = item[1]
-                        rect_coords = [
-                            self.pdf_xy_to_geometry(r.x0, r.y0, page_height, unit_factor),
-                            self.pdf_xy_to_geometry(r.x1, r.y0, page_height, unit_factor),
-                            self.pdf_xy_to_geometry(r.x1, r.y1, page_height, unit_factor),
-                            self.pdf_xy_to_geometry(r.x0, r.y1, page_height, unit_factor),
-                            self.pdf_xy_to_geometry(r.x0, r.y0, page_height, unit_factor)
-                        ]
-                        finish_subpath()
-                        subpaths.append(rect_coords)
-                        local_follow.append(LineString(rect_coords))
-                    elif op == 'qu':
-                        q = item[1]
-                        quad_coords = [
-                            self.pdf_point_to_geometry(q.ul, page_height, unit_factor),
-                            self.pdf_point_to_geometry(q.ur, page_height, unit_factor),
-                            self.pdf_point_to_geometry(q.lr, page_height, unit_factor),
-                            self.pdf_point_to_geometry(q.ll, page_height, unit_factor),
-                            self.pdf_point_to_geometry(q.ul, page_height, unit_factor)
-                        ]
-                        finish_subpath()
-                        subpaths.append(quad_coords)
-                        local_follow.append(LineString(quad_coords))
-                finish_subpath()
+                subpaths = reconstruct_pdf_subpaths(drawing, page_height, unit_factor)
 
                 draw_type = drawing.get('type') or ''
+                if index in preserve_circle_indices and not preserved_circle_subpaths:
+                    for subpath in subpaths:
+                        points = subpath.get('closed_points') or subpath.get('points') or []
+                        if len(points) < 3:
+                            continue
+                        try:
+                            add_cropped(follow_geometry, LineString(points))
+                        except Exception:
+                            continue
+                    continue
+
+                drawing_solids = []
+                preserved_added = set()
                 if 'f' in draw_type:
                     fill_lines = []
                     for subpath in subpaths:
-                        if len(subpath) < 3:
+                        key = (index, subpath.get('index'))
+                        if key in excluded_subpaths:
                             continue
-                        closed = list(subpath)
+                        if key in preserved_circle_subpaths:
+                            try:
+                                add_cropped(follow_geometry, LineString(subpath.get('closed_points')))
+                                preserved_added.add(key)
+                            except Exception:
+                                pass
+                            continue
+                        points = subpath.get('points') or []
+                        if len(points) < 3:
+                            continue
+                        closed = list(points)
                         if closed[0] != closed[-1]:
                             closed.append(closed[0])
                         try:
                             polygon = Polygon(closed)
                             if polygon.is_valid and not polygon.is_empty and polygon.area > 0:
-                                add_cropped(solid_geometry, polygon)
+                                drawing_solids.append(polygon)
                             else:
                                 fill_lines.append(LineString(closed))
                         except Exception:
@@ -337,23 +355,141 @@ class PDFGeometryBuilder:
                         try:
                             for polygon in polygonize(unary_union(fill_lines)):
                                 if polygon is not None and not polygon.is_empty:
-                                    add_cropped(solid_geometry, polygon)
+                                    drawing_solids.append(polygon)
                         except Exception:
                             pass
 
                 if 's' in draw_type:
                     stroke_width = float(drawing.get('width') or 0.0) * unit_factor
-                    for follow in local_follow:
-                        try:
-                            add_cropped(follow_geometry, follow)
-                            if stroke_width > 0.0:
-                                add_cropped(solid_geometry, follow.buffer(stroke_width / 2.0))
-                        except Exception:
-                            continue
+                    if stroke_width > 0.0:
+                        for subpath in subpaths:
+                            key = (index, subpath.get('index'))
+                            if key in excluded_subpaths:
+                                continue
+                            if key in preserved_circle_subpaths:
+                                if key in preserved_added:
+                                    continue
+                                try:
+                                    add_cropped(follow_geometry, LineString(subpath.get('closed_points')))
+                                    preserved_added.add(key)
+                                except Exception:
+                                    pass
+                                continue
+                            points = subpath.get('points') or []
+                            if len(points) < 2:
+                                continue
+                            try:
+                                stroke_path = LineString(points)
+                                if not stroke_path.is_empty and stroke_path.length > 0:
+                                    drawing_solids.append(stroke_path.buffer(stroke_width / 2.0))
+                            except Exception:
+                                continue
+                    else:
+                        for subpath in subpaths:
+                            key = (index, subpath.get('index'))
+                            if key in excluded_subpaths:
+                                continue
+                            try:
+                                add_cropped(follow_geometry, subpath.get('line'))
+                            except Exception:
+                                continue
+
+                if drawing_solids:
+                    try:
+                        drawing_result = unary_union(drawing_solids) if len(drawing_solids) > 1 else drawing_solids[0]
+                        add_cropped(solid_geometry, drawing_result)
+                    except Exception:
+                        for geometry in drawing_solids:
+                            add_cropped(solid_geometry, geometry)
         finally:
             doc.close()
 
         return solid_geometry, follow_geometry
+
+    def drawings_parse_result(self, pdf_filename, page_number=1, page_count=1, crop_rect=None,
+                              started=None, temp_files=None, deleted_files=None, warnings=None,
+                              exclude_drawing_indices=None, preserve_circle_indices=None,
+                              excluded_subpaths=None, preserved_circle_subpaths=None):
+        started = started or time.time()
+        temp_files = temp_files or []
+        deleted_files = deleted_files or []
+        warnings = warnings or []
+
+        pdf_content = self.extract_pdf_drawings_for_page(
+            pdf_filename=pdf_filename,
+            page_number=page_number,
+            crop_rect=crop_rect,
+            exclude_drawing_indices=exclude_drawing_indices
+        )
+        vector_complexity = self.count_vector_ops(pdf_content)
+        if vector_complexity <= 0:
+            return {
+                'success': False,
+                'solid_geometry': [],
+                'follow_geometry': [],
+                'warnings': warnings + ['No drawable vector PDF operators found.'],
+                'page_number': page_number,
+                'page_count': page_count,
+                'temp_files': temp_files,
+                'deleted_files': deleted_files,
+                'elapsed': time.time() - started
+            }
+
+        complexity_warnings = list(warnings)
+        if vector_complexity > PDF_WARN_VECTOR_OPS:
+            complexity_warnings.append(PDF_HIGH_COMPLEXITY_MESSAGE)
+
+        if vector_complexity > self.max_vector_ops:
+            return {
+                'success': False,
+                'solid_geometry': [],
+                'follow_geometry': [],
+                'warnings': complexity_warnings + [
+                    'The selected PDF page contains approximately %s vector operations. '
+                    '%s' % (vector_complexity, PDF_TOO_COMPLEX_MESSAGE)
+                ],
+                'page_number': page_number,
+                'page_count': page_count,
+                'vector_complexity': vector_complexity,
+                'temp_files': temp_files,
+                'deleted_files': deleted_files,
+                'elapsed': time.time() - started
+            }
+
+        solid_geometry, follow_geometry = self.drawings_to_geometry(
+            pdf_filename, page_number=page_number, crop_rect=crop_rect,
+            exclude_drawing_indices=exclude_drawing_indices,
+            preserve_circle_indices=preserve_circle_indices,
+            excluded_subpaths=excluded_subpaths,
+            preserved_circle_subpaths=preserved_circle_subpaths
+        )
+        if solid_geometry or follow_geometry:
+            return {
+                'success': True,
+                'solid_geometry': solid_geometry,
+                'follow_geometry': follow_geometry,
+                'warnings': complexity_warnings,
+                'page_number': page_number,
+                'page_count': page_count,
+                'temp_files': temp_files,
+                'deleted_files': deleted_files,
+                'elapsed': time.time() - started
+            }
+
+        empty_message = 'No Geometry Object compatible PDF geometry was produced.'
+        if crop_rect is not None:
+            empty_message = 'No Geometry Object compatible PDF geometry was produced inside the selected crop.'
+        return {
+            'success': False,
+            'solid_geometry': [],
+            'follow_geometry': [],
+            'warnings': complexity_warnings + [empty_message],
+            'page_number': page_number,
+            'page_count': page_count,
+            'temp_files': temp_files,
+            'deleted_files': deleted_files,
+            'elapsed': time.time() - started
+        }
 
     @staticmethod
     def count_vector_ops(pdf_content):
@@ -474,11 +610,29 @@ class PDFGeometryBuilder:
                 except Exception:
                     pass
 
-    def parse_vector_pdf(self, pdf_filename, page_number=1, page_count=1, crop_rect=None):
+    def parse_vector_pdf(self, pdf_filename, page_number=1, page_count=1, crop_rect=None, analysis=None,
+                         exclude_drawing_indices=None, preserve_circle_indices=None,
+                         excluded_subpaths=None, preserved_circle_subpaths=None):
         started = time.time()
         temp_filename = None
         temp_files = []
         deleted_files = []
+        use_modern_parser, modern_source = self.modern_source_from_advisor(analysis)
+
+        if use_modern_parser:
+            return self.drawings_parse_result(
+                pdf_filename,
+                page_number=page_number,
+                page_count=page_count,
+                crop_rect=crop_rect,
+                started=started,
+                temp_files=temp_files,
+                deleted_files=deleted_files,
+                exclude_drawing_indices=exclude_drawing_indices,
+                preserve_circle_indices=preserve_circle_indices,
+                excluded_subpaths=excluded_subpaths,
+                preserved_circle_subpaths=preserved_circle_subpaths
+            )
 
         if page_count and page_count > 1 and crop_rect is None:
             try:
@@ -506,10 +660,18 @@ class PDFGeometryBuilder:
 
         try:
             if crop_rect is not None:
-                pdf_content = self.extract_pdf_drawings_for_page(
-                    pdf_filename=pdf_filename,
+                return self.drawings_parse_result(
+                    pdf_filename,
                     page_number=page_number,
-                    crop_rect=crop_rect
+                    page_count=page_count,
+                    crop_rect=crop_rect,
+                    started=started,
+                    temp_files=temp_files,
+                    deleted_files=deleted_files,
+                    exclude_drawing_indices=exclude_drawing_indices,
+                    preserve_circle_indices=preserve_circle_indices,
+                    excluded_subpaths=excluded_subpaths,
+                    preserved_circle_subpaths=preserved_circle_subpaths
                 )
             else:
                 pdf_content = self.extract_pdf_vector_streams(
@@ -554,6 +716,10 @@ class PDFGeometryBuilder:
                     'elapsed': time.time() - started
                 }
 
+            complexity_warnings = []
+            if vector_complexity > PDF_WARN_VECTOR_OPS:
+                complexity_warnings.append(PDF_HIGH_COMPLEXITY_MESSAGE)
+
             if vector_complexity > self.max_vector_ops:
                 return {
                     'success': False,
@@ -561,67 +727,37 @@ class PDFGeometryBuilder:
                     'follow_geometry': [],
                     'warnings': [
                         'The selected PDF page contains approximately %s vector operations. '
-                        'This exceeds the current safe processing limit (%s operations). '
-                        'Recommendations: export only the PCB layer to a new PDF; remove decorative artwork, '
-                        'title blocks and unused pages; simplify the PDF before importing; if possible, export only '
-                        'the circuit geometry. The import was cancelled to prevent excessive memory usage or long '
-                        'processing times.' %
-                        (vector_complexity, self.max_vector_ops)
+                        '%s' % (vector_complexity, PDF_TOO_COMPLEX_MESSAGE)
                     ],
                     'page_number': page_number,
                     'page_count': page_count,
                     'vector_complexity': vector_complexity,
                     'temp_files': temp_files,
                     'deleted_files': deleted_files,
-                        'elapsed': time.time() - started
-                    }
-
-            if crop_rect is not None:
-                solid_geometry, follow_geometry = self.drawings_to_geometry(
-                    pdf_filename, page_number=page_number, crop_rect=crop_rect
-                )
-                if solid_geometry or follow_geometry:
-                    return {
-                        'success': True,
-                        'solid_geometry': solid_geometry,
-                        'follow_geometry': follow_geometry,
-                        'warnings': [],
-                        'page_number': page_number,
-                        'page_count': page_count,
-                        'temp_files': temp_files,
-                        'deleted_files': deleted_files,
-                        'elapsed': time.time() - started
-                    }
-                return {
-                    'success': False,
-                    'solid_geometry': [],
-                    'follow_geometry': [],
-                    'warnings': ['No Geometry Object compatible PDF geometry was produced inside the selected crop.'],
-                    'page_number': page_number,
-                    'page_count': page_count,
-                    'temp_files': temp_files,
-                    'deleted_files': deleted_files,
                     'elapsed': time.time() - started
-                }
+                    }
 
-            parsed_pdf = self.parser.parse_pdf(pdf_content=pdf_content)
+            try:
+                parsed_pdf = self.parser.parse_pdf(pdf_content=pdf_content)
+            except Exception:
+                return self.drawings_parse_result(
+                    pdf_filename,
+                    page_number=page_number,
+                    page_count=page_count,
+                    crop_rect=crop_rect,
+                    started=started,
+                    temp_files=temp_files,
+                    deleted_files=deleted_files,
+                    warnings=[
+                        'Legacy PDF parser failed.',
+                        'Falling back to PyMuPDF drawings parser.'
+                    ],
+                    exclude_drawing_indices=exclude_drawing_indices,
+                    preserve_circle_indices=preserve_circle_indices,
+                    excluded_subpaths=excluded_subpaths,
+                    preserved_circle_subpaths=preserved_circle_subpaths
+                )
             if not parsed_pdf:
-                if crop_rect is not None:
-                    solid_geometry, follow_geometry = self.drawings_to_geometry(
-                        pdf_filename, page_number=page_number, crop_rect=crop_rect
-                    )
-                    if solid_geometry or follow_geometry:
-                        return {
-                            'success': True,
-                            'solid_geometry': solid_geometry,
-                            'follow_geometry': follow_geometry,
-                            'warnings': [],
-                            'page_number': page_number,
-                            'page_count': page_count,
-                            'temp_files': temp_files,
-                            'deleted_files': deleted_files,
-                            'elapsed': time.time() - started
-                        }
                 return {
                     'success': False,
                     'solid_geometry': [],
@@ -687,14 +823,18 @@ class PDFGeometryBuilder:
             if not solid_geometry and not follow_geometry:
                 if crop_rect is not None:
                     solid_geometry, follow_geometry = self.drawings_to_geometry(
-                        pdf_filename, page_number=page_number, crop_rect=crop_rect
+                        pdf_filename, page_number=page_number, crop_rect=crop_rect,
+                        exclude_drawing_indices=exclude_drawing_indices,
+                        preserve_circle_indices=preserve_circle_indices,
+                        excluded_subpaths=excluded_subpaths,
+                        preserved_circle_subpaths=preserved_circle_subpaths
                     )
                     if solid_geometry or follow_geometry:
                         return {
                             'success': True,
                             'solid_geometry': solid_geometry,
                             'follow_geometry': follow_geometry,
-                            'warnings': [],
+                            'warnings': complexity_warnings,
                             'page_number': page_number,
                             'page_count': page_count,
                             'temp_files': temp_files,
@@ -717,7 +857,7 @@ class PDFGeometryBuilder:
                 'success': True,
                 'solid_geometry': solid_geometry,
                 'follow_geometry': follow_geometry,
-                'warnings': [],
+                'warnings': complexity_warnings,
                 'page_number': page_number,
                 'page_count': page_count,
                 'temp_files': temp_files,

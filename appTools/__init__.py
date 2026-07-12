@@ -4,6 +4,7 @@ from appTools.ToolCalibration import ToolCalibration
 
 from appTools.ToolDblSided import DblSidedTool
 from appTools.ToolExtractDrills import ToolExtractDrills
+from appTools.ToolMergeExcellon import ToolMergeExcellon
 from appTools.ToolAlignObjects import AlignObjects
 
 from appTools.ToolFilm import Film

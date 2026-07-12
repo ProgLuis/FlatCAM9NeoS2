@@ -417,3 +417,105 @@ Current CAD/CAM Compatibility Suites:
 * PDF Compatibility Suite
 
 This continues the evolution of FlatCAM 9 Neo S2 toward a more consistent CAD/CAM import platform for common design interchange formats.
+
+## 11/07/2026
+
+### Advanced PDF and Excellon Workflow
+
+FlatCAM 9 Neo S2 now includes an expanded PDF and Excellon preparation workflow built on top of the PDF Compatibility Suite completed on 29/06/2026.
+
+The `Import -> PDF as Geometry Object` workflow was extended for more robust CAM-oriented PDF recovery and preparation. The validated vector PDF sources include:
+
+* Adobe Illustrator.
+* CorelDRAW.
+* Proteus.
+
+PDF as Geometry Object now includes:
+
+* PDF Content Analyzer diagnostics.
+* PDF Source Advisor guidance.
+* Page selection for multipage PDFs.
+* Preview and interactive crop support.
+* Full Page and cropped import paths.
+* Vector import through PyMuPDF drawing extraction and Shapely geometry construction.
+* Safe fallback behavior when the legacy parser cannot process a PDF.
+* Preservation of the original PDF file.
+* Independent processing from `PDF as Gerber Object`.
+* Flip Horizontal and Flip Vertical support for compatible vector PDF content.
+* Complexity limits with warnings above 4000 vector operations and safe blocking above 6000 operations.
+* Stabilized preview behavior so crop selection does not visually displace the page.
+* Improved stroke and fill consolidation to avoid duplicated geometry and triple borders.
+* Subpath reconstruction and classification for complex PDF drawings.
+* Preservation of Geometry circumferences that are not accepted as drills.
+
+An experimental raster PDF pipeline also exists for clean software-generated black and white artwork:
+
+* PDF raster rendering.
+* Binarization.
+* Potrace vectorization.
+* SVG Tiny 1.2 bridge.
+* Geometry Object creation through the existing SVG parser.
+
+This raster path remains experimental and should be verified carefully before CAM use.
+
+The `Import -> PDF as Gerber Object` workflow remains a separate branch. It supports page selection and crop through safe prepared inputs, keeps the original PDF untouched, and creates Gerber Objects suitable for Isolation Routing when the PDF vector content is compatible. Its architecture remains separated from PDF as Geometry Object so improvements in one branch do not destabilize the other.
+
+PDF as Geometry Object can now optionally detect conservative Excellon drill data from vector PDF artwork:
+
+* White circular vector geometry can be recognized as possible drill holes.
+* Ellipses are rejected.
+* Accepted diameters are limited to the conservative 0.2 mm to 6.0 mm range.
+* Page and crop selection are respected.
+* Results are grouped by diameter.
+* An optional separate Excellon Object can be created.
+* Accepted drills can be removed from the main Geometry output.
+* Rejected or preserved circumferences remain available as Geometry.
+* Raster PDF content is excluded from automatic white drill recognition.
+
+This recognition is intentionally conservative. Users should always verify drill diameters, positions, isolation paths and CNC jobs before manufacturing.
+
+The Extract Drills Tool was expanded into two clear sections:
+
+* `A) Convert Gerber Objects to Drills`.
+* `B) Convert Geometry Circumferences to Drills`.
+
+The new `Convert Geometry Circumferences to Drills` section allows manual or assisted Excellon declaration from Geometry Objects. It supports:
+
+* Geometry Object selection.
+* Automatic diameter measurement from selected circumferences.
+* Manual diameter assignment from 0.2 mm to 15.0 mm.
+* Individual canvas selection.
+* Temporary highlight overlays.
+* `Selected circumferences` and `Tools` counters.
+* `Undo Last Selection`.
+* `Clear Selection`.
+* `Remove original geometry circumferences after conversion`.
+* Deferred Geometry cleanup only after successful Excellon creation.
+* One generated Excellon Object grouped by diameter.
+
+This makes it possible to recover or declare drill data from Geometry produced by PDF, SVG, DXF or manual editing.
+
+A new independent tool was also added:
+
+* `Merge Excellon Objects`.
+
+The tool is available in the Tool menu below Extract Drills and has its own Tools toolbar button. It works from Project panel multi-selection with Ctrl + Click and displays a read-only `Selected Excellon Objects` list.
+
+Merge Excellon Objects:
+
+* Requires at least two Excellon Objects.
+* Rejects non-Excellon selections.
+* Keeps all source Excellon Objects intact.
+* Rebuilds the tools table by real diameter instead of copying original tool IDs.
+* Detects duplicate drill centers.
+* Detects physically overlapping drills.
+* Allows tangent drills within tolerance.
+* Rejects slots in this first version.
+* Creates a new `merged_excellon` object with unique names for repeated merges.
+* Remains open after a successful merge.
+* Uses a Close button that removes only its Tool tab content while preserving Project and Properties.
+* Includes a dedicated light and dark icon related visually to Extract Drills.
+
+These improvements strengthen FlatCAM 9 Neo S2 as a recovery, preparation and validation environment for PCB designs received in PDF, SVG, DXF, Gerber and Excellon formats.
+
+Native Gerber and Excellon manufacturing files remain the recommended workflow when they are available.

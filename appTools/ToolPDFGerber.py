@@ -21,6 +21,7 @@ from appTool import AppTool
 from appParsers.ParsePDF import grace
 from appParsers.PDFContentAnalyzer import analyze_pdf_source
 from appParsers.PDFGerberBuilder import PDFGerberBuilder
+from appParsers.PDFImportTransform import get_pdf_import_origin, apply_pdf_import_transform_to_parsed_pdf
 from appParsers.PDFPreparedInput import prepare_pdf_page, remove_prepared_pdf
 from appParsers.PDFSourceAdvisor import advise_pdf_source
 from appTools.PDFImportAssistant import PDFImportAssistantDialog
@@ -231,6 +232,8 @@ class ToolPDFGerber(AppTool):
 
                     page_number = assistant.page_number
                     crop_rect = assistant.crop_rect
+                    flip_horizontal = assistant.flip_horizontal
+                    flip_vertical = assistant.flip_vertical
                     if crop_rect is None:
                         try:
                             prepared_filename, temp_filename = prepare_pdf_page(
@@ -248,13 +251,22 @@ class ToolPDFGerber(AppTool):
 
                     queued = True
                     self.app.worker_task.emit({'fcn': self.open_pdf,
-                                               'params': [prepared_filename, filename, temp_filename, page_number, crop_rect]})
+                                               'params': [
+                                                   prepared_filename,
+                                                   filename,
+                                                   temp_filename,
+                                                   page_number,
+                                                   crop_rect,
+                                                   flip_horizontal,
+                                                   flip_vertical
+                                               ]})
 
             if queued:
                 # start the parsing timer with a period of 1 second
                 self.periodic_check(1000)
 
-    def open_pdf(self, filename, display_filename=None, cleanup_filename=None, page_number=1, crop_rect=None):
+    def open_pdf(self, filename, display_filename=None, cleanup_filename=None, page_number=1, crop_rect=None,
+                 flip_horizontal=False, flip_vertical=False):
         display_filename = display_filename or filename
         short_name = display_filename.split('/')[-1].split('\\')[-1]
         self.parsing_promises.append(short_name)
@@ -307,8 +319,32 @@ class ToolPDFGerber(AppTool):
                 self.remove_parsing_promise(short_name)
                 return
 
+            if result.get('warning'):
+                self.app.inform.emit('[WARNING_NOTCL] %s' % _(result.get('warning')))
+
+            parsed_pdf = result.get('parsed_pdf') or {}
+            if flip_horizontal or flip_vertical:
+                try:
+                    transform_origin = get_pdf_import_origin(
+                        display_filename,
+                        page_number=page_number,
+                        crop_rect=crop_rect
+                    )
+                    parsed_pdf = apply_pdf_import_transform_to_parsed_pdf(
+                        parsed_pdf,
+                        transform_origin,
+                        flip_horizontal=flip_horizontal,
+                        flip_vertical=flip_vertical
+                    )
+                    self.app.inform.emit(
+                        "PDF import flip applied: horizontal=%s; vertical=%s; origin=(%.4f, %.4f) mm." %
+                        (bool(flip_horizontal), bool(flip_vertical), transform_origin[0], transform_origin[1])
+                    )
+                except Exception as e:
+                    self.app.inform.emit('[WARNING_NOTCL] %s: %s' % (_("PDF import flip failed"), str(e)))
+
             self.pdf_decompressed[short_name] = result.get('pdf_content') or ''
-            self.pdf_parsed[short_name]['pdf'] = result.get('parsed_pdf') or {}
+            self.pdf_parsed[short_name]['pdf'] = parsed_pdf
             log.debug("ToolPDFGerber.open_pdf() --> parse_pdf() finished")
             self.pdf_decompressed[short_name] = ''
 

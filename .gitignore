@@ -19,5 +19,6 @@ Prueba*.dxf
 *.gcode
 
 .DS_Store
+.agents
+.codex
 Thumbs.db
-
